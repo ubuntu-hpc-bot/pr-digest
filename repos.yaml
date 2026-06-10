@@ -4,12 +4,21 @@
 #
 # Format: <owner>/<repo>
 repos:
-  - charmed-hpc/slurmctld
-  - charmed-hpc/slurmd
-  - charmed-hpc/slurmdbd
-  - charmed-hpc/slurmrestd
-  - charmed-hpc/sackd
-  - charmed-hpc/slurm-bundles
-  - charmed-hpc/slurm-snap
-  - charmed-hpc/charm-fluentbit
+  - charmed-hpc/apptainer-operator
+  - charmed-hpc/filesystem-charms
+  - charmed-hpc/slurmutils
+  - charmed-hpc/hpc-libs
+  - charmed-hpc/specs
+  - charmed-hpc/slurm-mail
+  - charmed-hpc/slurm-mail-snap
+  - charmed-hpc/charmed-hpc-benchmarks
   - charmed-hpc/docs
+  - charmed-hpc/slurm-charms
+  - charmed-hpc/sssd-operator
+  - charmed-hpc/charmed-hpc-terraform
+  - charmed-hpc/mysql-proxy-operator
+  - charmed-hpc/slurm-snap
+  - charmed-hpc/ondemand-snap
+  - charmed-hpc/node-exporter-operator
+  - charmed-hpc/influxdb-operator
+ 
