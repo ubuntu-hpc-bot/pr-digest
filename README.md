@@ -1,5 +1,3 @@
-# pr-digest
-
 Daily PR digest for the `charmed-hpc` org, posted to a Mattermost channel.
 One combined message per day, grouped by repo, with reviewer load and
 24-business-hour staleness flags.
@@ -167,4 +165,4 @@ The workflow has a `workflow_dispatch` trigger. From the Actions tab:
 
 ## License
 
-Pick one. Internal use, no default.
+
