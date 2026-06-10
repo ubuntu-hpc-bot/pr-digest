@@ -4,7 +4,7 @@ One combined message per day, grouped by repo, with reviewer load and
 
 ## What it does
 
-Once a day (default 09:00 UTC, weekdays), this workflow:
+This workflow:
 
 1. Reads the list of repos from `repos.yaml`
 2. Queries the GitHub API for open PRs in each
@@ -15,7 +15,35 @@ Once a day (default 09:00 UTC, weekdays), this workflow:
 No long-lived service. No external scheduler. Runs in a GitHub-hosted
 runner that's destroyed after each run.
 
-## One-time setup
+## Files in this repo
+
+```
+.github/workflows/pr-digest.yml  # The schedule + run config
+scripts/pr_digest.py             # Main script: fetches, renders, posts
+scripts/business_hours.py        # Weekday-aware delta math
+repos.yaml                       # List of repos to scan
+README.md                        # This file
+examples/caller-workflow.yml     # Reference for triggering from elsewhere
+```
+
+## Editing the repo list
+
+Open `repos.yaml` and add or remove entries:
+
+```yaml
+repos:
+  - charmed-hpc/slurmctld
+  - charmed-hpc/slurmd
+  - charmed-hpc/new-repo    # added
+  # - charmed-hpc/old-repo  # disabled, will be skipped
+```
+
+Commit the change. The next scheduled run uses the new list. **You
+also need to update the PAT scope** to include any newly added repos.
+
+---
+
+## Setup
 
 ### 1. Create this repo
 
@@ -68,36 +96,9 @@ Go to the Actions tab in the `pr-digest` repo, select "PR Digest",
 click "Run workflow". Within ~30 seconds you should see the digest
 message appear in the Mattermost channel.
 
-### 6. Wait for the schedule
+### 6. Schedule
 
-The default schedule is 09:00 UTC on weekdays. Edit the `cron:` line
-in `.github/workflows/pr-digest.yml` to change it. Cron is in UTC.
-
-## Files in this repo
-
-```
-.github/workflows/pr-digest.yml  # The schedule + run config
-scripts/pr_digest.py             # Main script: fetches, renders, posts
-scripts/business_hours.py        # Weekday-aware delta math
-repos.yaml                       # List of repos to scan
-README.md                        # This file
-examples/caller-workflow.yml     # Reference for triggering from elsewhere
-```
-
-## Editing the repo list
-
-Open `repos.yaml` and add or remove entries:
-
-```yaml
-repos:
-  - charmed-hpc/slurmctld
-  - charmed-hpc/slurmd
-  - charmed-hpc/new-repo    # added
-  # - charmed-hpc/old-repo  # disabled, will be skipped
-```
-
-Commit the change. The next scheduled run uses the new list. **You
-also need to update the PAT scope** to include any newly added repos.
+Edit the `cron:` line in `.github/workflows/pr-digest.yml` to set your preferred schedule. Cron is in UTC.
 
 ## Migrating the project to a new org
 

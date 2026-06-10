@@ -8,7 +8,7 @@ on:
     #   '0 9 * * 1-5'    09:00 UTC Mon-Fri
     #   '30 14 * * 1-5'  14:30 UTC Mon-Fri
     #   '0 9 * * *'      09:00 UTC every day
-    - cron: '0 9 * * 1-5'
+    - cron: '0 10 * * 1-5'
   workflow_dispatch:
     # Allows manual triggering from the Actions tab for testing.
 
@@ -36,6 +36,7 @@ jobs:
 
       - name: Run digest
         env:
+          DRY_RUN: 1
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           MATTERMOST_WEBHOOK_URL: ${{ secrets.MATTERMOST_WEBHOOK_URL }}
           REPOS_FILE: ${{ github.workspace }}/repos.yaml
