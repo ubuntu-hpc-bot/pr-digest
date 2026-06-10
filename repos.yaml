@@ -3,6 +3,17 @@
 # disable a repo without deleting it, comment the line out with `#`.
 #
 # Format: <owner>/<repo>
+#
+# Activity thresholds control how PRs are bucketed in the digest.
+# All values are in business hours (Mon-Fri, all hours).
+thresholds:
+    # PRs newer than this with very few comments go in "Needs attention".
+    new_max_hours: 48
+    # PRs with this many comments or fewer while still "new" get flagged.
+    new_max_comments: 1
+    # PRs with no activity for longer than this go in "Stale / dead".
+    stale_min_hours: 240
+
 repos:
     - charmed-hpc/.github
     - charmed-hpc/apptainer-operator

@@ -76,6 +76,7 @@ At <https://github.com/settings/personal-access-tokens/new>:
 - **Permissions**:
   - Repository → Metadata: **Read-only**
   - Repository → Pull requests: **Read-only**
+  - Repository → Issues: **Read-only**
 
 Set an expiration (90 days is typical). Put a calendar reminder to
 rotate it before expiry.
@@ -164,6 +165,5 @@ The workflow has a `workflow_dispatch` trigger. From the Actions tab:
 - Both are stored as GitHub Actions encrypted secrets, which are not
   exposed to forks or to PRs from forks.
 
-## License
 
 

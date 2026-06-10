@@ -61,14 +61,26 @@ def parse_iso(s: str) -> datetime:
     return datetime.fromisoformat(s).astimezone(timezone.utc)
 
 
-def load_repos(path: Path) -> list[str]:
-    """Load the list of repos from repos.yaml."""
+def load_repos(path: Path) -> tuple[list[str], dict[str, Any]]:
+    """Load the list of repos and activity thresholds from repos.yaml."""
     with path.open() as f:
         data = yaml.safe_load(f)
-    repos = data.get("repos", []) if isinstance(data, dict) else []
+    if not isinstance(data, dict):
+        raise ValueError("repos.yaml: top-level must be a mapping")
+    repos = data.get("repos", [])
     if not isinstance(repos, list):
         raise ValueError(f"repos.yaml: 'repos' must be a list, got {type(repos).__name__}")
-    return [str(r).strip() for r in repos if str(r).strip()]
+    repo_list = [str(r).strip() for r in repos if str(r).strip()]
+
+    raw_thresholds = data.get("thresholds", {}) or {}
+    if not isinstance(raw_thresholds, dict):
+        raise ValueError("repos.yaml: 'thresholds' must be a mapping")
+    thresholds: dict[str, Any] = {
+        "new_max_hours": float(raw_thresholds.get("new_max_hours", 48)),
+        "new_max_comments": int(raw_thresholds.get("new_max_comments", 1)),
+        "stale_min_hours": float(raw_thresholds.get("stale_min_hours", 120)),
+    }
+    return repo_list, thresholds
 
 
 def list_open_prs(owner: str, repo: str, token: str) -> list[dict[str, Any]]:
@@ -119,11 +131,32 @@ def collect_pr_activity(pr: dict[str, Any], token: str) -> dict[str, Any]:
             candidates.append(parse_iso(r["submitted_at"]))
     last_activity = max(candidates)
 
+    # Issue comments + review bodies count as "comments" for activity.
+    review_bodies = [r for r in reviews if r.get("body")]
+    comment_count = len(comments) + len(review_bodies)
+
+    # Participants = unique commenters + reviewers (excluding the author).
+    author_login = pr["user"]["login"]
+    participant_counts: dict[str, int] = {}
+    for c in comments:
+        u = c.get("user", {}).get("login")
+        if u and u != author_login:
+            participant_counts[u] = participant_counts.get(u, 0) + 1
+    for r in reviews:
+        u = r.get("user", {}).get("login")
+        if u and u != author_login:
+            participant_counts[u] = participant_counts.get(u, 0) + 1
+    top_commenters = sorted(
+        participant_counts.items(), key=lambda kv: (-kv[1], kv[0])
+    )[:3]
+    participant_count = len(participant_counts)
+
     return {
         "number": number,
         "title": pr["title"],
-        "author": pr["user"]["login"],
+        "author": author_login,
         "html_url": pr["html_url"],
+        "repo_full": f"{owner}/{repo}",
         "created_at": parse_iso(pr["created_at"]),
         "updated_at": parse_iso(pr["updated_at"]),
         "last_activity": last_activity,
@@ -133,6 +166,9 @@ def collect_pr_activity(pr: dict[str, Any], token: str) -> dict[str, Any]:
         "additions": pr.get("additions", 0),
         "deletions": pr.get("deletions", 0),
         "review_state": derive_review_state(detail, reviews),
+        "comment_count": comment_count,
+        "participant_count": participant_count,
+        "top_commenters": top_commenters,
     }
 
 
@@ -162,6 +198,29 @@ def is_stale(last_activity: datetime, now: datetime) -> bool:
     return business_hours_between(last_activity, now) >= STALE_THRESHOLD_HOURS
 
 
+def bucket_pr(
+    pr: dict[str, Any], now: datetime, thresholds: dict[str, Any]
+) -> str:
+    """Classify a PR into one of: 'needs_attention', 'stale', 'active'.
+
+    - needs_attention: PR is recent (within new_max_hours) and has very
+      little engagement (≤ new_max_comments comments). New but quiet.
+    - stale: PR has had no business-hour activity for ≥ stale_min_hours.
+    - active: everything else.
+    """
+    hours_since_activity = business_hours_between(pr["last_activity"], now)
+    age_hours = business_hours_between(pr["created_at"], now)
+
+    if (
+        age_hours <= thresholds["new_max_hours"]
+        and pr["comment_count"] <= thresholds["new_max_comments"]
+    ):
+        return "needs_attention"
+    if hours_since_activity >= thresholds["stale_min_hours"]:
+        return "stale"
+    return "active"
+
+
 def age_human(created: datetime, now: datetime) -> str:
     """Render a PR's age as a short human string."""
     delta = now - created
@@ -185,32 +244,52 @@ def last_activity_human(last: datetime, now: datetime) -> str:
     return f"{minutes}m ago"
 
 
-def build_repo_section(
-    repo_full: str, prs: list[dict[str, Any]], now: datetime
+def build_pr_row(pr: dict[str, Any], now: datetime) -> str:
+    """Render a single PR as a markdown table row."""
+    number = pr["number"]
+    url = pr["html_url"]
+    author = pr["author"]
+    repo_short = pr["repo_full"].split("/", 1)[-1]
+    age = age_human(pr["created_at"], now)
+    last = last_activity_human(pr["last_activity"], now)
+
+    reviewer_list = list(pr["requested_reviewers"])
+    if pr["requested_teams"]:
+        reviewer_list = reviewer_list + [f"@{t}" for t in pr["requested_teams"]]
+    if pr["draft"]:
+        reviewers = "_draft_"
+    elif reviewer_list:
+        reviewers = ", ".join(f"@{r}" for r in reviewer_list)
+    else:
+        reviewers = "_(none)_"
+
+    comments_cell = f"{pr['comment_count']} ({pr['participant_count']} ppl)"
+    if pr["top_commenters"]:
+        top = ", ".join(f"@{u}({n})" for u, n in pr["top_commenters"])
+        comments_cell = f"{comments_cell} — top: {top}"
+
+    title = pr["title"]
+    if len(title) > 50:
+        title = title[:50] + "…"
+    return (
+        f"| [{repo_short}#{number}]({url}) {title} "
+        f"| @{author} | {age} | {last} | {comments_cell} | {reviewers} | {pr['review_state']} |"
+    )
+
+
+def build_pr_section(
+    title: str, prs: list[dict[str, Any]], now: datetime
 ) -> str:
-    """Render the markdown section for a single repo."""
-    lines = [f"### {repo_full} ({len(prs)} PR{'s' if len(prs) != 1 else ''})", ""]
-    lines.append("| PR | Author | Age | Last activity | Reviewers | Status |")
-    lines.append("|---|---|---|---|---|---|")
+    """Render a markdown section (heading + table) for a list of PRs."""
+    lines = [f"## {title} ({len(prs)})", ""]
+    if not prs:
+        lines.append("_None._")
+        lines.append("")
+        return "\n".join(lines)
+    lines.append("| PR | Author | Age | Last activity | Comments | Reviewers | Status |")
+    lines.append("|---|---|---|---|---|---|---|")
     for pr in prs:
-        number = pr["number"]
-        url = pr["html_url"]
-        author = pr["author"]
-        age = age_human(pr["created_at"], now)
-        last = last_activity_human(pr["last_activity"], now)
-        reviewer_list = pr["requested_reviewers"] or []
-        if pr["requested_teams"]:
-            reviewer_list = reviewer_list + [f"@{t}" for t in pr["requested_teams"]]
-        reviewers = ", ".join(reviewer_list) if reviewer_list else "_(none)_"
-        if pr["draft"]:
-            reviewers = "_draft_"
-        last_marker = last
-        if is_stale(pr["last_activity"], now):
-            last_marker = f"{last} :warning:"
-        lines.append(
-            f"| [#{number}]({url}) {pr['title'][:50]}{'…' if len(pr['title']) > 50 else ''} "
-            f"| @{author} | {age} | {last_marker} | {reviewers} | {pr['review_state']} |"
-        )
+        lines.append(build_pr_row(pr, now))
     lines.append("")
     return "\n".join(lines)
 
@@ -227,56 +306,70 @@ def build_reviewer_load(all_prs: list[tuple[str, dict[str, Any]]]) -> list[tuple
 def build_digest(
     repos_with_prs: list[tuple[str, list[dict[str, Any]]]],
     now: datetime,
+    thresholds: dict[str, Any],
 ) -> str:
-    """Build the full markdown digest string."""
-    total_prs = sum(len(prs) for _, prs in repos_with_prs)
-    all_pr_pairs: list[tuple[str, dict[str, Any]]] = []
-    for repo, prs in repos_with_prs:
-        for pr in prs:
-            all_pr_pairs.append((repo, pr))
-    reviewer_load = build_reviewer_load(all_pr_pairs)
-    stale_prs = [
-        (repo, pr) for repo, pr in all_pr_pairs if is_stale(pr["last_activity"], now)
-    ]
+    """Build the full markdown digest string, bucketed by activity tier."""
+    all_prs: list[dict[str, Any]] = []
+    for _repo, prs in repos_with_prs:
+        all_prs.extend(prs)
 
     today = now.strftime("%Y-%m-%d")
     lines: list[str] = []
     lines.append(f"# PR Digest — charmed-hpc — {today}")
     lines.append("")
 
-    if not all_pr_pairs:
+    if not all_prs:
         lines.append("_No open PRs across tracked repos. :tada:_")
         lines.append("")
         return "\n".join(lines)
 
     repo_count = len(repos_with_prs)
+    total_prs = len(all_prs)
+    reviewer_load = build_reviewer_load(
+        [("", pr) for pr in all_prs]  # repo not used by build_reviewer_load
+    )
+
+    needs_attention: list[dict[str, Any]] = []
+    stale: list[dict[str, Any]] = []
+    active: list[dict[str, Any]] = []
+    for pr in all_prs:
+        bucket = bucket_pr(pr, now, thresholds)
+        if bucket == "needs_attention":
+            needs_attention.append(pr)
+        elif bucket == "stale":
+            stale.append(pr)
+        else:
+            active.append(pr)
+
+    # Order each bucket: needs_attention by oldest first (most at risk),
+    # stale by oldest inactivity first, active by most recent activity.
+    needs_attention.sort(key=lambda p: p["created_at"])
+    stale.sort(key=lambda p: p["last_activity"])
+    active.sort(key=lambda p: p["last_activity"], reverse=True)
+
     lines.append("## Org summary")
     lines.append(
         f"- {total_prs} open PR{'s' if total_prs != 1 else ''} across {repo_count} "
         f"repo{'s' if repo_count != 1 else ''}"
     )
     lines.append(
-        f"- {len(stale_prs)} stale (no business-hour activity in >{int(STALE_THRESHOLD_HOURS)}h)"
+        f"- {len(needs_attention)} new but quiet (≤ "
+        f"{int(thresholds['new_max_comments'])} comments, opened within "
+        f"{int(thresholds['new_max_hours'])} business hours)"
     )
+    lines.append(
+        f"- {len(stale)} stale (no business-hour activity in "
+        f"≥ {int(thresholds['stale_min_hours'])}h)"
+    )
+    lines.append(f"- {len(active)} active")
     if reviewer_load:
         load_str = ", ".join(f"@{u} ({n})" for u, n in reviewer_load[:5])
         lines.append(f"- Reviewer load (top): {load_str}")
-    lines.append(f"- Repos with open PRs: {', '.join(r for r, _ in repos_with_prs)}")
     lines.append("")
 
-    lines.append("## By repo")
-    lines.append("")
-    for repo, prs in repos_with_prs:
-        lines.append(build_repo_section(repo, prs, now))
-
-    if stale_prs:
-        lines.append("## Stale PRs (no business-hour activity in >24h)")
-        lines.append("")
-        for repo, pr in stale_prs:
-            url = pr["html_url"]
-            age = age_human(pr["created_at"], now)
-            lines.append(f"- [{repo}#{pr['number']}]({url}) — @{pr['author']} (open {age})")
-        lines.append("")
+    lines.append(build_pr_section("Needs attention", needs_attention, now))
+    lines.append(build_pr_section("Active", active, now))
+    lines.append(build_pr_section("Stale / dead", stale, now))
 
     return "\n".join(lines)
 
@@ -345,7 +438,7 @@ def main() -> int:
     repos_path = Path(
         os.environ.get("REPOS_FILE", Path(__file__).parent.parent / "repos.yaml")
     )
-    repos = load_repos(repos_path)
+    repos, thresholds = load_repos(repos_path)
     if not repos:
         print(f"No repos listed in {repos_path}", file=sys.stderr)
         return 1
@@ -359,7 +452,7 @@ def main() -> int:
         if result is not None and result[1]:
             results.append(result)
 
-    digest = build_digest(results, now)
+    digest = build_digest(results, now, thresholds)
 
     if os.environ.get("DRY_RUN") == "1":
         print("---- DRY RUN: not posting to Mattermost ----", file=sys.stderr)
