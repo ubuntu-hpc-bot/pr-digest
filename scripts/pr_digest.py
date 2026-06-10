@@ -135,21 +135,29 @@ def collect_pr_activity(pr: dict[str, Any], token: str) -> dict[str, Any]:
     review_bodies = [r for r in reviews if r.get("body")]
     comment_count = len(comments) + len(review_bodies)
 
-    # Participants = unique commenters + reviewers (excluding the author).
+    # Commenters: include the author too, for display in the digest. The
+    # activity/bucketing logic (see external_comment_count below) only
+    # counts non-author comments, so a PR where the author is the only
+    # commenter still gets flagged as needing attention.
     author_login = pr["user"]["login"]
-    participant_counts: dict[str, int] = {}
+    commenter_counts: dict[str, int] = {}
     for c in comments:
         u = c.get("user", {}).get("login")
-        if u and u != author_login:
-            participant_counts[u] = participant_counts.get(u, 0) + 1
-    for r in reviews:
+        if u:
+            commenter_counts[u] = commenter_counts.get(u, 0) + 1
+    for r in review_bodies:
         u = r.get("user", {}).get("login")
-        if u and u != author_login:
-            participant_counts[u] = participant_counts.get(u, 0) + 1
-    top_commenters = sorted(
-        participant_counts.items(), key=lambda kv: (-kv[1], kv[0])
+        if u:
+            commenter_counts[u] = commenter_counts.get(u, 0) + 1
+    top_commenters_all = sorted(
+        commenter_counts.items(), key=lambda kv: (-kv[1], kv[0])
     )[:3]
-    participant_count = len(participant_counts)
+    external_comment_count = sum(
+        n for u, n in commenter_counts.items() if u != author_login
+    )
+    external_participant_count = sum(
+        1 for u in commenter_counts if u != author_login
+    )
 
     return {
         "number": number,
@@ -167,8 +175,9 @@ def collect_pr_activity(pr: dict[str, Any], token: str) -> dict[str, Any]:
         "deletions": pr.get("deletions", 0),
         "review_state": derive_review_state(detail, reviews),
         "comment_count": comment_count,
-        "participant_count": participant_count,
-        "top_commenters": top_commenters,
+        "external_comment_count": external_comment_count,
+        "external_participant_count": external_participant_count,
+        "top_commenters_all": top_commenters_all,
     }
 
 
@@ -213,7 +222,7 @@ def bucket_pr(
 
     if (
         age_hours <= thresholds["new_max_hours"]
-        and pr["comment_count"] <= thresholds["new_max_comments"]
+        and pr["external_comment_count"] <= thresholds["new_max_comments"]
     ):
         return "needs_attention"
     if hours_since_activity >= thresholds["stale_min_hours"]:
@@ -263,9 +272,16 @@ def build_pr_row(pr: dict[str, Any], now: datetime) -> str:
     else:
         reviewers = "_(none)_"
 
-    comments_cell = f"{pr['comment_count']} ({pr['participant_count']} ppl)"
-    if pr["top_commenters"]:
-        top = ", ".join(f"@{u}({n})" for u, n in pr["top_commenters"])
+    comments_cell = (
+        f"{pr['comment_count']} ({pr['external_participant_count']} ppl)"
+    )
+    if pr["top_commenters_all"]:
+        author_login = pr["author"]
+        rendered = []
+        for u, n in pr["top_commenters_all"]:
+            tag = "author" if u == author_login else u
+            rendered.append(f"@{tag}({n})")
+        top = ", ".join(rendered)
         comments_cell = f"{comments_cell} — top: {top}"
 
     title = pr["title"]
@@ -342,9 +358,11 @@ def build_digest(
             active.append(pr)
 
     # Order each bucket: needs_attention by oldest first (most at risk),
-    # stale by oldest inactivity first, active by most recent activity.
+    # stale by most recent activity first (so the freshest "stale" PRs
+    # appear at the top — they're closer to being re-awakened), and
+    # active by most recent activity.
     needs_attention.sort(key=lambda p: p["created_at"])
-    stale.sort(key=lambda p: p["last_activity"])
+    stale.sort(key=lambda p: p["last_activity"], reverse=True)
     active.sort(key=lambda p: p["last_activity"], reverse=True)
 
     lines.append("## Org summary")
