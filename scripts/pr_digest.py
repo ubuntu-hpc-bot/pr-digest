@@ -296,12 +296,14 @@ def build_pr_row(pr: dict[str, Any], now: datetime) -> str:
 def build_pr_section(
     title: str, prs: list[dict[str, Any]], now: datetime
 ) -> str:
-    """Render a markdown section (heading + table) for a list of PRs."""
-    lines = [f"## {title} ({len(prs)})", ""]
+    """Render a markdown section (heading + table) for a list of PRs.
+
+    Returns an empty string when there are no PRs, so the caller can
+    skip the heading and table entirely.
+    """
     if not prs:
-        lines.append("_None._")
-        lines.append("")
-        return "\n".join(lines)
+        return ""
+    lines = [f"## {title} ({len(prs)})", ""]
     lines.append("| PR | Author | Age | Last activity | Comments | Reviewers | Status |")
     lines.append("|---|---|---|---|---|---|---|")
     for pr in prs:
@@ -385,9 +387,14 @@ def build_digest(
         lines.append(f"- Reviewer load (top): {load_str}")
     lines.append("")
 
-    lines.append(build_pr_section("Needs attention", needs_attention, now))
-    lines.append(build_pr_section("Active", active, now))
-    lines.append(build_pr_section("Stale / dead", stale, now))
+    for title, group in (
+        ("Needs attention", needs_attention),
+        ("Active", active),
+        ("Stale / dead", stale),
+    ):
+        section = build_pr_section(title, group, now)
+        if section:
+            lines.append(section)
 
     return "\n".join(lines)
 

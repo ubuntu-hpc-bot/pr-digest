@@ -17,7 +17,6 @@ thresholds:
 repos:
     - charmed-hpc/.github
     - charmed-hpc/apptainer-operator
-    - charmed-hpc/charm-fluentbit
     - charmed-hpc/charmed-hpc-benchmarks
     - charmed-hpc/charmed-hpc-terraform
     - charmed-hpc/docs
@@ -26,7 +25,6 @@ repos:
     - charmed-hpc/identity-federation-with-jupyterhub-demo
     - charmed-hpc/infiniband-operator
     - charmed-hpc/influxdb-operator
-    - charmed-hpc/munge-operator
     - charmed-hpc/mungectl
     - charmed-hpc/mysql-proxy-operator
     - charmed-hpc/node-exporter-operator
@@ -38,16 +36,9 @@ repos:
     - charmed-hpc/slurm
     - charmed-hpc/slurm-bundles
     - charmed-hpc/slurm-charms
-    - charmed-hpc/slurm-exporter-operator
     - charmed-hpc/slurm-mail
-    - charmed-hpc/slurm-mail-snap
     - charmed-hpc/slurm-snap
-    - charmed-hpc/slurmcltd-operator
-    - charmed-hpc/slurmd-operator
-    - charmed-hpc/slurmdbd-operator
-    - charmed-hpc/slurmrestd-operator
     - charmed-hpc/slurmutils
-    - charmed-hpc/snap-slurm
     - charmed-hpc/specs
     - charmed-hpc/sssd-operator
     - charmed-hpc/sysprober
