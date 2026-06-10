@@ -1,0 +1,15 @@
+# Repositories scanned by the daily PR digest.
+# Add or remove entries as projects come and go. To temporarily
+# disable a repo without deleting it, comment the line out with `#`.
+#
+# Format: <owner>/<repo>
+repos:
+  - charmed-hpc/slurmctld
+  - charmed-hpc/slurmd
+  - charmed-hpc/slurmdbd
+  - charmed-hpc/slurmrestd
+  - charmed-hpc/sackd
+  - charmed-hpc/slurm-bundles
+  - charmed-hpc/slurm-snap
+  - charmed-hpc/charm-fluentbit
+  - charmed-hpc/docs
