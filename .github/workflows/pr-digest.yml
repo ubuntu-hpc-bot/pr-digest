@@ -36,7 +36,6 @@ jobs:
 
       - name: Run digest
         env:
-          DRY_RUN: 1
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           MATTERMOST_WEBHOOK_URL: ${{ secrets.MATTERMOST_WEBHOOK_URL }}
           REPOS_FILE: ${{ github.workspace }}/repos.yaml
