@@ -1,6 +1,6 @@
 Daily PR digest for the `charmed-hpc` org, posted to a Mattermost channel.
 One combined message per day, grouped by repo, with reviewer load and
-24-business-hour staleness flags.
+24-business-hour staleness flags. Made with AI agents (Minimax primarily).
 
 ## What it does
 
