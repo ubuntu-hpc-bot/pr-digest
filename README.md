@@ -1,16 +1,29 @@
-Daily PR digest for the `charmed-hpc` org, posted to a Mattermost channel.
-One combined message per day, grouped by repo, with reviewer load and
-24-business-hour staleness flags. Made with AI agents (Minimax primarily).
+Daily PR digest for the `charmed-hpc` org, posted to a Mattermost
+channel and a weekly recap posted to a Matrix room. The daily digest
+is bucketed by activity (Needs attention, Active, Stale / dead) with
+comment and reviewer activity, and the weekly recap adds a
+"Merged this week" section. Made with AI agents (Minimax primarily).
 
 ## What it does
 
-This workflow:
+Two workflows run from this repo:
+
+**Daily (Mattermost)** — `.github/workflows/pr-digest.yml`:
 
 1. Reads the list of repos from `repos.yaml`
 2. Queries the GitHub API for open PRs in each
-3. Computes reviewer load and business-hour staleness
+3. Buckets PRs into Needs attention, Active, and Stale / dead using
+   business-hour thresholds
 4. Renders a single combined markdown digest
 5. Posts it to a Mattermost incoming webhook
+
+**Weekly (Matrix)** — `.github/workflows/pr-digest-matrix.yml`:
+
+1. Builds the same open-PR digest as the daily run
+2. Fetches PRs merged in the last 7 days, with body excerpts, labels,
+   and diff stats
+3. Renders both as a single combined markdown digest
+4. Posts it to a Matrix room using a user access token
 
 No long-lived service. No external scheduler. Runs in a GitHub-hosted
 runner that's destroyed after each run.
@@ -18,10 +31,12 @@ runner that's destroyed after each run.
 ## Files in this repo
 
 ```
-.github/workflows/pr-digest.yml  # The schedule + run config
-scripts/pr_digest.py             # Main script: fetches, renders, posts
+.github/workflows/pr-digest.yml        # Daily schedule + Mattermost run
+.github/workflows/pr-digest-matrix.yml # Weekly schedule + Matrix run
+scripts/pr_digest.py             # Daily: fetches, renders, posts to Mattermost
+scripts/pr_digest_matrix.py      # Weekly: adds merged-this-week + posts to Matrix
 scripts/business_hours.py        # Weekday-aware delta math
-repos.yaml                       # List of repos to scan
+repos.yaml                       # List of repos to scan + activity thresholds
 README.md                        # This file
 examples/caller-workflow.yml     # Reference for triggering from elsewhere
 ```
@@ -84,22 +99,90 @@ rotate it before expiry.
 ### 4. Store the secrets
 
 In the `pr-digest` repo: Settings → Secrets and variables → Actions →
-New repository secret. Add two:
+New repository secret. Add the Mattermost pair (the Matrix pair is
+optional — skip section 5 if you don't want the weekly post):
 
 | Name | Value |
 |---|---|
 | `GH_TOKEN` | The fine-grained PAT from step 3 |
 | `MATTERMOST_WEBHOOK_URL` | The webhook URL from step 2 |
 
-### 5. Test
+### 5. (Optional) Set up Matrix for the weekly digest
+
+The weekly recap posts to a Matrix room. You need a bot account and
+a room it's joined.
+
+**5a. Create a bot account.** Register a regular Matrix account on
+your homeserver, e.g. `@pr-digest:matrix.org`. Use Element Web (or
+any client) to sign up, set a password, and complete any email or
+captcha verification. Treat the password like a normal account
+password — rotate it the same way.
+
+**5b. Join the target room.** From the bot account, join the room
+you want digests in (e.g. `#pr-digest:matrix.org`). Bots can only
+post to rooms they've joined. If the room is end-to-end-encrypted,
+use an unencrypted room instead — the simple HTTP bot can't post
+encrypted messages.
+
+**5c. Get an access token.** From any machine with `curl`, log the
+bot in once:
+
+```bash
+curl -X POST https://matrix.org/_matrix/client/v3/login \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "type": "m.login.password",
+    "user": "pr-digest",
+    "password": "..."
+  }'
+```
+
+The response includes `access_token` and `user_id`. Copy the
+`access_token` — that's the only secret you need to store. The
+homeserver URL (`https://matrix.org` in the example) is also a
+secret, just a public one.
+
+If the homeserver is not `matrix.org`, replace the URL in the
+`curl` command with your homeserver's client-API base.
+
+**5d. Find the room ID.** In Element Web, open the room →
+Room Settings → Advanced → "Internal room ID". It looks like
+`!abc123:matrix.org`. Or via the API:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  https://matrix.org/_matrix/client/v3/joined_rooms
+```
+
+The response lists room IDs the bot is a member of.
+
+**5e. Add three more secrets:**
+
+| Name | Value |
+|---|---|
+| `MATRIX_HOMESERVER` | The homeserver URL, e.g. `https://matrix.org` |
+| `MATRIX_ACCESS_TOKEN` | The `access_token` from 5c |
+| `MATRIX_ROOM_ID` | The room ID from 5d |
+
+**5f. Test.** Trigger the "PR Digest — Matrix (weekly)" workflow
+from the Actions tab. Within ~30 seconds the weekly recap should
+appear in the Matrix room. If it doesn't, check the Actions log —
+common causes are 401 (token wrong or expired) or 403 (bot not in
+the room).
+
+### 6. Test the daily run
 
 Go to the Actions tab in the `pr-digest` repo, select "PR Digest",
 click "Run workflow". Within ~30 seconds you should see the digest
 message appear in the Mattermost channel.
 
-### 6. Schedule
+### 7. Schedule
 
-Edit the `cron:` line in `.github/workflows/pr-digest.yml` to set your preferred schedule. Cron is in UTC.
+Edit the `cron:` line in the workflow file(s) to set your preferred
+schedule. Cron is in UTC.
+
+- `.github/workflows/pr-digest.yml` — daily Mattermost post
+- `.github/workflows/pr-digest-matrix.yml` — weekly Matrix post
 
 ## Migrating the project to a new org
 

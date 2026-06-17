@@ -90,6 +90,34 @@ def list_open_prs(owner: str, repo: str, token: str) -> list[dict[str, Any]]:
     return data if isinstance(data, list) else []
 
 
+def list_merged_prs_since(
+    owner: str, repo: str, token: str, since: datetime
+) -> list[dict[str, Any]]:
+    """List PRs merged at or after `since` (UTC) in a repo.
+
+    The GitHub API doesn't support a `since` filter on the pulls
+    listing, so we fetch closed PRs (the only way to get merged_at)
+    and filter client-side. PRs are returned in updated-desc order
+    by the API; we re-sort by merged_at desc so the caller doesn't
+    have to.
+    """
+    url = f"{GITHUB_API}/repos/{owner}/{repo}/pulls?state=closed&per_page=100&sort=updated&direction=desc"
+    data = http_get(url, token)
+    if not isinstance(data, list):
+        return []
+    merged: list[dict[str, Any]] = []
+    for pr in data:
+        merged_at_raw = pr.get("merged_at")
+        if not merged_at_raw:
+            continue
+        merged_at = parse_iso(merged_at_raw)
+        if merged_at < since:
+            continue
+        merged.append(pr)
+    merged.sort(key=lambda p: parse_iso(p["merged_at"]), reverse=True)
+    return merged
+
+
 def get_pr_detail(owner: str, repo: str, number: int, token: str) -> dict[str, Any] | None:
     """Fetch full PR detail, including requested_reviewers."""
     url = f"{GITHUB_API}/repos/{owner}/{repo}/pulls/{number}"

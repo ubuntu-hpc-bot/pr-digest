@@ -1,0 +1,42 @@
+name: PR Digest — Matrix (weekly)
+
+on:
+  schedule:
+    # 09:00 UTC, Monday only. Edit this line to change the time or frequency.
+    # Cron syntax: 'minute hour day-of-month month day-of-week'
+    #   '0 9 * * 1'      09:00 UTC every Monday
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+    # Allows manual triggering from the Actions tab for testing.
+
+permissions:
+  contents: read
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml
+
+      - name: Run weekly digest
+        env:
+          DRY_RUN: 1
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          MATRIX_HOMESERVER: ${{ secrets.MATRIX_HOMESERVER }}
+          MATRIX_ACCESS_TOKEN: ${{ secrets.MATRIX_ACCESS_TOKEN }}
+          MATRIX_ROOM_ID: ${{ secrets.MATRIX_ROOM_ID }}
+          REPOS_FILE: ${{ github.workspace }}/repos.yaml
+        run: python scripts/pr_digest_matrix.py
