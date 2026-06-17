@@ -183,7 +183,7 @@ To preview the rendered output without actually posting, set
 `DRY_RUN: '1'` in the workflow's `env:` block (temporarily — revert
 when you're done iterating).
 
-### 8. Schedule
+### 7. Schedule
 
 Each target has its own `cron:` line, in UTC, in its own workflow
 file. Edit either to change the schedule or frequency.
