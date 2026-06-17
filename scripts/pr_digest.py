@@ -33,6 +33,23 @@ STALE_THRESHOLD_HOURS = 24.0
 HTTP_TIMEOUT = 30
 BODY_EXCERPT_CHARS = 200  # merged-PR body excerpt length
 
+# Truthy values accepted for boolean env vars (DRY_RUN, INCLUDE_*).
+# Both the unquoted YAML form (1) and the quoted form ('1') end up as
+# the Python string "1", but a reader who writes the value differently
+# should still get the expected behavior.
+_TRUTHY = frozenset({"1", "true", "True", "yes", "Yes", "on", "On"})
+
+
+def _truthy(name: str, default: str = "") -> bool:
+    """Read an env var and return True iff it parses as truthy.
+
+    `default` is the value to use when the env var is unset. An unset
+    or empty value returns False. The comparison is case-insensitive
+    against the `_TRUTHY` set.
+    """
+    raw = os.environ.get(name, default)
+    return str(raw).strip() in _TRUTHY
+
 
 def http_get(url: str, token: str) -> dict[str, Any] | list[Any]:
     """GET a JSON resource from the GitHub API. Raises on non-2xx."""
@@ -697,9 +714,12 @@ def main() -> int:
     Common env vars:
       GH_TOKEN         (required) fine-grained GitHub PAT
       POST_TARGET      mattermost | matrix (default: mattermost)
-      DRY_RUN          "1" = log digest instead of posting
-      INCLUDE_STALE    "0" = hide Stale/dead bucket + Org summary line
-      INCLUDE_NEEDS_ATTENTION  "0" = hide Needs attention bucket + line
+      DRY_RUN          truthy = log digest instead of posting
+                       (accepts 1, '1', 'true', 'yes', 'on')
+      INCLUDE_STALE    falsy = hide Stale/dead bucket + Org line
+                       (default: shown)
+      INCLUDE_NEEDS_ATTENTION  falsy = hide Needs attention + line
+                       (default: shown)
       REPOS_FILE       path to repos.yaml (default: ./repos.yaml)
       MERGED_WINDOW    days of merged-PR history (matrix only,
                        default 7)
@@ -723,8 +743,8 @@ def main() -> int:
         )
         return 2
 
-    include_stale = os.environ.get("INCLUDE_STALE", "1") == "1"
-    include_needs_attention = os.environ.get("INCLUDE_NEEDS_ATTENTION", "1") == "1"
+    include_stale = _truthy("INCLUDE_STALE", "1")
+    include_needs_attention = _truthy("INCLUDE_NEEDS_ATTENTION", "1")
 
     repos_path = Path(
         os.environ.get("REPOS_FILE", Path(__file__).parent.parent / "repos.yaml")
@@ -791,7 +811,7 @@ def main() -> int:
             include_needs_attention=include_needs_attention,
         )
 
-    if os.environ.get("DRY_RUN") == "1":
+    if _truthy("DRY_RUN"):
         print(
             f"---- DRY RUN: not posting to {target} ----",
             file=sys.stderr,
