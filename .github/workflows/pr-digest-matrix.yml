@@ -33,10 +33,20 @@ jobs:
 
       - name: Run weekly digest
         env:
-          DRY_RUN: 1
+          # POST_TARGET=matrix switches the script to the Matrix
+          # post backend and adds the "Merged this week" fetch.
+          # DRY_RUN=1 prints the digest to the Actions log instead
+          # of posting. INCLUDE_STALE=0 hides the Stale/dead bucket
+          # (and its Org summary line). MERGED_WINDOW controls how
+          # far back merged PRs are fetched, in days.
+          POST_TARGET: matrix
+          DRY_RUN: '1'
+          INCLUDE_STALE: '0'
+          INCLUDE_NEEDS_ATTENTION: '1'
+          MERGED_WINDOW: '7'
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           MATRIX_HOMESERVER: ${{ secrets.MATRIX_HOMESERVER }}
           MATRIX_ACCESS_TOKEN: ${{ secrets.MATRIX_ACCESS_TOKEN }}
           MATRIX_ROOM_ID: ${{ secrets.MATRIX_ROOM_ID }}
           REPOS_FILE: ${{ github.workspace }}/repos.yaml
-        run: python scripts/pr_digest_matrix.py
+        run: python scripts/pr_digest.py

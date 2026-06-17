@@ -245,9 +245,28 @@ def main() -> int:
         if result is not None and result[1]:
             merged_results.append(result)
 
-    open_digest = build_digest(open_results, now, thresholds)
+    # The weekly Matrix recap drops the "Stale / dead" bucket — the
+    # daily Mattermost post covers it, and a weekly recap is more
+    # useful when it focuses on what reviewers can act on now. Both
+    # flags default to True, so the daily script is unaffected.
+    include_stale = os.environ.get("INCLUDE_STALE", "0") == "1"
+    include_needs_attention = os.environ.get("INCLUDE_NEEDS_ATTENTION", "0") == "1"
+    merged_count = sum(len(prs) for _, prs in merged_results)
     merged_section = build_merged_section(merged_results)
-    digest = open_digest.rstrip() + "\n" + (merged_section or "")
+    # Pass the pre-rendered merged section into build_digest() so it
+    # appears between the Org summary and the first open-PR bucket
+    # (e.g. immediately before Active). If nothing merged, the
+    # section is empty and is skipped — the Org summary's
+    # "0 merged this week" line still surfaces the zero state.
+    digest = build_digest(
+        open_results,
+        now,
+        thresholds,
+        include_stale=include_stale,
+        include_needs_attention=include_needs_attention,
+        merged_count=merged_count,
+        merged_section=merged_section,
+    )
 
     if os.environ.get("DRY_RUN") == "1":
         print("---- DRY RUN: not posting to Matrix ----", file=sys.stderr)

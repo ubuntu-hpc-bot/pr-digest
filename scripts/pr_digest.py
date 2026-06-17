@@ -1,8 +1,12 @@
-"""Daily PR digest for the charmed-hpc org, posted to Mattermost.
+"""PR digest for the charmed-hpc org.
 
-Reads repos.yaml, queries the GitHub API for open PRs in each repo,
-computes reviewer load and business-hour staleness, and posts a
-single combined markdown digest to a Mattermost incoming webhook.
+One script, two post targets (Mattermost and Matrix), selected by
+the `POST_TARGET` env var. Both modes read `repos.yaml`, query the
+GitHub API for open PRs in each repo, compute reviewer load and
+business-hour staleness, and render a single combined markdown
+digest. The Matrix mode additionally fetches PRs merged in the
+`MERGED_WINDOW` (default 7) most recent days and renders them as a
+"Merged this week" section above the open-PR buckets.
 
 Stdlib only — no third-party dependencies.
 """
@@ -15,7 +19,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +31,7 @@ from business_hours import business_hours_between
 GITHUB_API = "https://api.github.com"
 STALE_THRESHOLD_HOURS = 24.0
 HTTP_TIMEOUT = 30
+BODY_EXCERPT_CHARS = 200  # merged-PR body excerpt length
 
 
 def http_get(url: str, token: str) -> dict[str, Any] | list[Any]:
@@ -304,11 +309,12 @@ def build_pr_row(pr: dict[str, Any], now: datetime) -> str:
         f"{pr['comment_count']} ({pr['external_participant_count']} ppl)"
     )
     if pr["top_commenters_all"]:
-        author_login = pr["author"]
         rendered = []
         for u, n in pr["top_commenters_all"]:
-            tag = "author" if u == author_login else u
-            rendered.append(f"@{tag}({n})")
+            # Render every commenter (including the PR author) as
+            # `@login (N)` with a space, so Mattermost autolinks the
+            # @name to a real mention.
+            rendered.append(f"@{u} ({n})")
         top = ", ".join(rendered)
         comments_cell = f"{comments_cell} — top: {top}"
 
@@ -353,8 +359,31 @@ def build_digest(
     repos_with_prs: list[tuple[str, list[dict[str, Any]]]],
     now: datetime,
     thresholds: dict[str, Any],
+    include_stale: bool = True,
+    include_needs_attention: bool = True,
+    merged_count: int | None = None,
+    merged_section: str | None = None,
 ) -> str:
-    """Build the full markdown digest string, bucketed by activity tier."""
+    """Build the full markdown digest string, bucketed by activity tier.
+
+    `include_stale` and `include_needs_attention` let callers (notably
+    the weekly Matrix script) suppress one or both buckets. The Org
+    summary counts always reflect the *full* set, not the displayed
+    subset, so the totals don't lie about what's in the org. The
+    suppressed bucket is just omitted from the rendered sections.
+
+    `merged_count` is an optional extra summary line for the weekly
+    Matrix recap: when not None, the Org summary includes a
+    "N merged this week" bullet. Pass `0` to make the zero-merged
+    case visible rather than silently omitting the section.
+
+    `merged_section` is an optional pre-rendered markdown block (the
+    full "## Merged this week (N)" table from the matrix script).
+    When provided, it is inserted between the Org summary and the
+    first open bucket, so the merged recap leads the rendered
+    output. Pass an empty string to skip it without losing the Org
+    summary's "N merged this week" line.
+    """
     all_prs: list[dict[str, Any]] = []
     for _repo, prs in repos_with_prs:
         all_prs.extend(prs)
@@ -396,30 +425,44 @@ def build_digest(
     active.sort(key=lambda p: p["last_activity"], reverse=True)
 
     lines.append("## Org summary")
+    if merged_count is not None:
+        lines.append(f"- {merged_count} merged this week")
     lines.append(
         f"- {total_prs} open PR{'s' if total_prs != 1 else ''} across {repo_count} "
         f"repo{'s' if repo_count != 1 else ''}"
     )
-    lines.append(
-        f"- {len(needs_attention)} new but quiet (≤ "
-        f"{int(thresholds['new_max_comments'])} comments, opened within "
-        f"{int(thresholds['new_max_hours'])} business hours)"
-    )
-    lines.append(
-        f"- {len(stale)} stale (no business-hour activity in "
-        f"≥ {int(thresholds['stale_min_hours'])}h)"
-    )
+    if include_needs_attention:
+        lines.append(
+            f"- {len(needs_attention)} new but quiet (≤ "
+            f"{int(thresholds['new_max_comments'])} comments, opened within "
+            f"{int(thresholds['new_max_hours'])} business hours)"
+        )
+    if include_stale:
+        lines.append(
+            f"- {len(stale)} stale (no business-hour activity in "
+            f"≥ {int(thresholds['stale_min_hours'])}h)"
+        )
     lines.append(f"- {len(active)} active")
     if reviewer_load:
         load_str = ", ".join(f"@{u} ({n})" for u, n in reviewer_load[:5])
         lines.append(f"- Reviewer load (top): {load_str}")
     lines.append("")
 
-    for title, group in (
-        ("Needs attention", needs_attention),
-        ("Active", active),
-        ("Stale / dead", stale),
-    ):
+    # Merged-this-week sits between the Org summary and the open-PR
+    # buckets, so the merged recap leads the rendered output for the
+    # weekly Matrix post. The daily script never passes it.
+    if merged_section:
+        lines.append(merged_section.rstrip())
+        lines.append("")
+
+    rendered_buckets: list[tuple[str, list[dict[str, Any]]]] = []
+    if include_needs_attention:
+        rendered_buckets.append(("Needs attention", needs_attention))
+    rendered_buckets.append(("Active", active))
+    if include_stale:
+        rendered_buckets.append(("Stale / dead", stale))
+
+    for title, group in rendered_buckets:
         section = build_pr_section(title, group, now)
         if section:
             lines.append(section)
@@ -478,15 +521,210 @@ def post_to_mattermost(webhook_url: str, text: str) -> None:
             )
 
 
+def post_to_matrix(
+    homeserver: str, access_token: str, room_id: str, text: str
+) -> None:
+    """POST `text` as a plain m.text message to a Matrix room.
+
+    Uses the user access token (no login on the hot path). The body
+    is sent as both `body` (plain markdown) and `formatted_body` so
+    clients that support HTML rendering can show the formatted
+    version, while others fall back to the plain text.
+    """
+    url = f"{homeserver.rstrip('/')}/_matrix/client/v3/rooms/{room_id}/send/m.room.message"
+    txn_id = os.urandom(8).hex()
+    url = f"{url}/{txn_id}"
+    payload = {
+        "msgtype": "m.text",
+        "body": text,
+        "format": "org.matrix.custom.html",
+        # We don't have a real markdown→HTML renderer, so we send the
+        # same markdown string in both fields. Clients that render
+        # `formatted_body` will show it as plain text; the `body`
+        # field is the authoritative plain-text view.
+        "formatted_body": text,
+    }
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+            "User-Agent": "pr-digest",
+        },
+        method="PUT",
+    )
+    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+        body = resp.read().decode("utf-8", errors="replace")
+        if resp.status >= 300:
+            raise RuntimeError(
+                f"Matrix API returned {resp.status}: {body[:300]}"
+            )
+
+
+# --------------------------------------------------------------------------
+# Merged-this-week helpers (Matrix mode only)
+# --------------------------------------------------------------------------
+
+
+def _merged_excerpt(body: str | None) -> str:
+    """Return a short excerpt of a merged PR body, with newlines flattened."""
+    if not body:
+        return ""
+    flat = " ".join(body.split())
+    if len(flat) <= BODY_EXCERPT_CHARS:
+        return flat
+    return flat[: BODY_EXCERPT_CHARS - 1].rstrip() + "…"
+
+
+def _labels_cell(labels: list[dict[str, Any]]) -> str:
+    """Render labels as a comma-separated list. Empty list → empty string."""
+    if not labels:
+        return ""
+    return ", ".join(f"`{l['name']}`" for l in labels if l.get("name"))
+
+
+def _esc(s: str) -> str:
+    """Escape pipe characters in a markdown table cell."""
+    return s.replace("|", "\\|")
+
+
+def build_merged_row(
+    pr: dict[str, Any], repo_short: str, include_labels: bool
+) -> str:
+    """Render a single merged PR as a markdown table row.
+
+    The Labels column is only included if `include_labels` is True;
+    when False the rendered row is 4-cell to match the 4-cell header.
+    """
+    number = pr["number"]
+    url = pr["html_url"]
+    title = pr["title"]
+    if len(title) > 60:
+        title = title[:60] + "…"
+    author = pr["user"]["login"]
+    body_excerpt = _merged_excerpt(pr.get("body"))
+    additions = pr.get("additions", 0) or 0
+    deletions = pr.get("deletions", 0) or 0
+    diff_cell = f"+{additions} / -{deletions}"
+
+    cells: list[str] = [
+        f"[{repo_short}#{number}]({url}) {_esc(title)}",
+        f"@{_esc(author)}",
+        _esc(body_excerpt) or "_(no description)_",
+    ]
+    if include_labels:
+        labels_cell = _labels_cell(pr.get("labels") or [])
+        cells.append(_esc(labels_cell))
+    cells.append(diff_cell)
+    return "| " + " | ".join(cells) + " |"
+
+
+def build_merged_section(
+    repos_with_merged: list[tuple[str, list[dict[str, Any]]]],
+) -> str:
+    """Render the full 'Merged this week' markdown block.
+
+    Returns an empty string if there are no merged PRs across all
+    repos, so the digest can skip the heading entirely. The Labels
+    column is only included for a repo if at least one of its PRs
+    has a label.
+    """
+    total = sum(len(prs) for _, prs in repos_with_merged)
+    if total == 0:
+        return ""
+
+    lines: list[str] = [f"## Merged this week ({total})", ""]
+
+    for repo_full, prs in repos_with_merged:
+        if not prs:
+            continue
+        repo_short = repo_full.split("/", 1)[-1]
+        any_labels = any(pr.get("labels") for pr in prs)
+        lines.append(f"### {repo_full} ({len(prs)})")
+        lines.append("")
+
+        if any_labels:
+            lines.append("| PR | Author | Description | Labels | Diff |")
+            lines.append("|---|---|---|---|---|")
+        else:
+            lines.append("| PR | Author | Description | Diff |")
+            lines.append("|---|---|---|---|")
+
+        for pr in prs:
+            lines.append(build_merged_row(pr, repo_short, any_labels))
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def fetch_merged_for_repo(
+    repo_full: str, token: str, since: datetime
+) -> tuple[str, list[dict[str, Any]]] | None:
+    """Fetch merged PRs for a repo since the cutoff. Returns None on total failure."""
+    if "/" not in repo_full:
+        print(f"  ! skipping malformed entry: {repo_full!r}", file=sys.stderr)
+        return None
+    owner, repo = repo_full.split("/", 1)
+    try:
+        merged = list_merged_prs_since(owner, repo, token, since)
+    except urllib.error.HTTPError as e:
+        print(
+            f"  ! {repo_full}: HTTP {e.code} listing merged PRs — skipping",
+            file=sys.stderr,
+        )
+        return None
+    except urllib.error.URLError as e:
+        print(
+            f"  ! {repo_full}: network error ({e.reason}) — skipping",
+            file=sys.stderr,
+        )
+        return None
+    return (repo_full, merged)
+
+
 def main() -> int:
+    """Entry point. Dispatches on `POST_TARGET` env var.
+
+    `POST_TARGET=mattermost` (default) — render the open-PR digest
+    and POST to the Mattermost webhook. All three open buckets
+    (Needs attention, Active, Stale/dead) render by default.
+
+    `POST_TARGET=matrix` — render the open-PR digest (Active only
+    by default) followed by the "Merged this week" section, and
+    POST to a Matrix room using a user access token.
+
+    Common env vars:
+      GH_TOKEN         (required) fine-grained GitHub PAT
+      POST_TARGET      mattermost | matrix (default: mattermost)
+      DRY_RUN          "1" = log digest instead of posting
+      INCLUDE_STALE    "0" = hide Stale/dead bucket + Org summary line
+      INCLUDE_NEEDS_ATTENTION  "0" = hide Needs attention bucket + line
+      REPOS_FILE       path to repos.yaml (default: ./repos.yaml)
+      MERGED_WINDOW    days of merged-PR history (matrix only,
+                       default 7)
+
+    Mattermost target also requires:
+      MATTERMOST_WEBHOOK_URL
+
+    Matrix target also requires:
+      MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN, MATRIX_ROOM_ID
+    """
     token = os.environ.get("GH_TOKEN")
-    webhook_url = os.environ.get("MATTERMOST_WEBHOOK_URL")
     if not token:
         print("GH_TOKEN env var is required", file=sys.stderr)
         return 2
-    if not webhook_url:
-        print("MATTERMOST_WEBHOOK_URL env var is required", file=sys.stderr)
+
+    target = os.environ.get("POST_TARGET", "mattermost").lower()
+    if target not in ("mattermost", "matrix"):
+        print(
+            f"POST_TARGET must be 'mattermost' or 'matrix' (got {target!r})",
+            file=sys.stderr,
+        )
         return 2
+
+    include_stale = os.environ.get("INCLUDE_STALE", "1") == "1"
+    include_needs_attention = os.environ.get("INCLUDE_NEEDS_ATTENTION", "1") == "1"
 
     repos_path = Path(
         os.environ.get("REPOS_FILE", Path(__file__).parent.parent / "repos.yaml")
@@ -497,23 +735,98 @@ def main() -> int:
         return 1
 
     now = datetime.now(timezone.utc)
-    print(f"Fetching PRs from {len(repos)} repos…", file=sys.stderr)
-    results: list[tuple[str, list[dict[str, Any]]]] = []
+    print(f"Fetching open PRs from {len(repos)} repos…", file=sys.stderr)
+    open_results: list[tuple[str, list[dict[str, Any]]]] = []
     for r in repos:
-        print(f"  - {r}", file=sys.stderr)
+        print(f"  - {r} (open)", file=sys.stderr)
         result = fetch_repo(r, token)
         if result is not None and result[1]:
-            results.append(result)
+            open_results.append(result)
 
-    digest = build_digest(results, now, thresholds)
+    # Merged-this-week fetch (Matrix mode only).
+    merged_results: list[tuple[str, list[dict[str, Any]]]] = []
+    merged_count = 0
+    if target == "matrix":
+        try:
+            merged_window_days = int(os.environ.get("MERGED_WINDOW", "7"))
+        except ValueError:
+            print(
+                "MERGED_WINDOW must be an integer (number of days)",
+                file=sys.stderr,
+            )
+            return 2
+        week_ago = now - timedelta(days=merged_window_days)
+        print(
+            f"Fetching merged PRs in the last {merged_window_days} days "
+            f"(since {week_ago.isoformat()})…",
+            file=sys.stderr,
+        )
+        for r in repos:
+            print(f"  - {r} (merged)", file=sys.stderr)
+            result = fetch_merged_for_repo(r, token, week_ago)
+            if result is not None and result[1]:
+                merged_results.append(result)
+        merged_count = sum(len(prs) for _, prs in merged_results)
+
+    merged_section = build_merged_section(merged_results) if target == "matrix" else None
+    # Pass merged_count/merged_section only when matrix mode produced
+    # them; the daily mode never gets a "merged this week" Org summary
+    # line.
+    if target == "matrix":
+        digest = build_digest(
+            open_results,
+            now,
+            thresholds,
+            include_stale=include_stale,
+            include_needs_attention=include_needs_attention,
+            merged_count=merged_count,
+            merged_section=merged_section,
+        )
+    else:
+        digest = build_digest(
+            open_results,
+            now,
+            thresholds,
+            include_stale=include_stale,
+            include_needs_attention=include_needs_attention,
+        )
 
     if os.environ.get("DRY_RUN") == "1":
-        print("---- DRY RUN: not posting to Mattermost ----", file=sys.stderr)
+        print(
+            f"---- DRY RUN: not posting to {target} ----",
+            file=sys.stderr,
+        )
         print(digest)
         return 0
 
-    print("Posting to Mattermost…", file=sys.stderr)
-    post_to_mattermost(webhook_url, digest)
+    if target == "matrix":
+        homeserver = os.environ.get("MATRIX_HOMESERVER")
+        access_token = os.environ.get("MATRIX_ACCESS_TOKEN")
+        room_id = os.environ.get("MATRIX_ROOM_ID")
+        missing = [
+            n for n, v in (
+                ("MATRIX_HOMESERVER", homeserver),
+                ("MATRIX_ACCESS_TOKEN", access_token),
+                ("MATRIX_ROOM_ID", room_id),
+            ) if not v
+        ]
+        if missing:
+            print(
+                f"Missing required env vars for POST_TARGET=matrix: "
+                f"{', '.join(missing)}",
+                file=sys.stderr,
+            )
+            return 2
+        print("Posting to Matrix…", file=sys.stderr)
+        post_to_matrix(homeserver, access_token, room_id, digest)  # type: ignore[arg-type]
+    else:
+        webhook_url = os.environ.get("MATTERMOST_WEBHOOK_URL")
+        if not webhook_url:
+            print("MATTERMOST_WEBHOOK_URL env var is required", file=sys.stderr)
+            return 2
+        print("Posting to Mattermost…", file=sys.stderr)
+        post_to_mattermost(webhook_url, digest)
+
     print("Done.", file=sys.stderr)
     return 0
 
