@@ -1,14 +1,13 @@
-PR digest for the `charmed-hpc` org, with two configurable post
+PR Digest creates summarizations of the pull requests for the `charmed-hpc` org, with two configurable post
 **targets**: Mattermost and Matrix. Each target has its own
 workflow, its own schedule (cron, in UTC), and its own secrets.
-The digests are bucketed by activity (Needs attention, Active,
-Stale / dead) with comment and reviewer activity; the Matrix
-target also adds a "Merged this week" section. Made with AI agents
-(Minimax primarily).
+The digests are bucketed by activity (Merged this week, Needs attention, Active,
+Stale / dead) with comment and reviewer activity. 
+*Made with AI agents (Minimax primarily).*
 
 ## What it does
 
-Two workflows run from this repo, both invoking the same script
+Two workflows run from this repo by default, both invoking the same script
 — [scripts/pr_digest.py](scripts/pr_digest.py) — and selecting
 the post backend via the `POST_TARGET` env var:
 
@@ -51,24 +50,7 @@ README.md                        # This file
 examples/caller-workflow.yml     # Reference for triggering from elsewhere
 ```
 
-## Editing the repo list
-
-Open `repos.yaml` and add or remove entries:
-
-```yaml
-repos:
-  - charmed-hpc/slurmctld
-  - charmed-hpc/slurmd
-  - charmed-hpc/new-repo    # added
-  # - charmed-hpc/old-repo  # disabled, will be skipped
-```
-
-Commit the change. The next scheduled run uses the new list. **You
-also need to update the PAT scope** to include any newly added repos.
-
----
-
-## Setup
+## Setup to duplicate for your own org
 
 ### 1. Create this repo
 
@@ -76,20 +58,7 @@ Create a **private** repo under your user account. The exact name
 doesn't matter, but `pr-digest` is the convention used here. Push the
 contents of this directory.
 
-### 2. Get a Mattermost incoming webhook
-
-In Mattermost:
-
-1. Go to the target channel (create one if needed, e.g. `#pr-digest`)
-2. Channel name → Integrations → Incoming Webhooks → Add Incoming Webhook
-3. Give it a display name (`PR Digest`) and an icon if you like
-4. Copy the webhook URL — it's the only credential you'll get
-
-If incoming webhooks are disabled at the system level, ask your
-Mattermost admin to enable them under
-**System Console → Integrations → Integration Management**.
-
-### 3. Create a fine-grained GitHub PAT
+### 2. Create a fine-grained GitHub PAT
 
 At <https://github.com/settings/personal-access-tokens/new>:
 
@@ -106,20 +75,29 @@ At <https://github.com/settings/personal-access-tokens/new>:
 Set an expiration (90 days is typical). Put a calendar reminder to
 rotate it before expiry.
 
-### 4. Store the shared secret
+### 3. Store the shared secret
 
 In the `pr-digest` repo: Settings → Secrets and variables → Actions →
 New repository secret.
 
 | Name | Value |
 |---|---|
-| `GH_TOKEN` | The fine-grained PAT from step 3 |
+| `GH_TOKEN` | The fine-grained PAT from step 2 |
 
-### 5. Set up the Mattermost target (optional)
+### 4. Setup Mattermost Target
 
-Skip this section if you don't want the Mattermost post. Otherwise:
+**4a. Create the Mattermost incoming webhook**
 
-**5a. Create the Mattermost incoming webhook** (as in step 2 above).
+In Mattermost:
+
+1. Go to the target channel (create one if needed, e.g. `#pr-digest`)
+2. Channel name → Integrations → Incoming Webhooks → Add Incoming Webhook
+3. Give it a display name (`PR Digest`) and an icon if you like
+4. Copy the webhook URL — it's the only credential you'll get
+
+If incoming webhooks are disabled at the system level, ask your
+Mattermost admin to enable them under
+**System Console → Integrations → Integration Management**.
 
 **5b. Add the secret:**
 
@@ -131,25 +109,21 @@ Skip this section if you don't want the Mattermost post. Otherwise:
 Edit the `cron:` line in `.github/workflows/pr-digest-mattermost.yml`
 to change the schedule or frequency.
 
-### 6. Set up the Matrix target (optional)
+### 5. Set up the Matrix target
 
-Skip this section if you don't want the Matrix post. The Matrix
-target posts a weekly recap to a Matrix room. You need a bot
-account and a room it's joined.
-
-**6a. Create a bot account.** Register a regular Matrix account on
+**5a. Create a bot account.** Register a regular Matrix account on
 your homeserver, e.g. `@pr-digest:matrix.org`. Use Element Web (or
 any client) to sign up, set a password, and complete any email or
 captcha verification. Treat the password like a normal account
 password — rotate it the same way.
 
-**6b. Join the target room.** From the bot account, join the room
+**5b. Join the target room.** From the bot account, join the room
 you want digests in (e.g. `#pr-digest:matrix.org`). Bots can only
 post to rooms they've joined. If the room is end-to-end-encrypted,
 use an unencrypted room instead — the simple HTTP bot can't post
 encrypted messages.
 
-**6c. Get an access token.** From any machine with `curl`, log the
+**5c. Get an access token.** From any machine with `curl`, log the
 bot in once:
 
 ```bash
@@ -170,7 +144,7 @@ secret, just a public one.
 If the homeserver is not `matrix.org`, replace the URL in the
 `curl` command with your homeserver's client-API base.
 
-**6d. Find the room ID.** In Element Web, open the room →
+**5d. Find the room ID.** In Element Web, open the room →
 Room Settings → Advanced → "Internal room ID". It looks like
 `!abc123:matrix.org`. Or via the API:
 
@@ -181,7 +155,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 The response lists room IDs the bot is a member of.
 
-**6e. Add three more secrets:**
+**5e. Add three secrets:**
 
 | Name | Value |
 |---|---|
@@ -189,11 +163,11 @@ The response lists room IDs the bot is a member of.
 | `MATRIX_ACCESS_TOKEN` | The `access_token` from 6c |
 | `MATRIX_ROOM_ID` | The room ID from 6d |
 
-**6f. The default Matrix workflow** runs Mondays at 09:00 UTC. Edit
+**5f. The default Matrix workflow** runs Mondays at 09:00 UTC. Edit
 the `cron:` line in `.github/workflows/pr-digest-matrix.yml` to
 change the schedule or frequency.
 
-### 7. Test the targets
+### 6. Test the targets
 
 Each workflow has a `workflow_dispatch` trigger. From the Actions
 tab in the `pr-digest` repo:
@@ -209,7 +183,7 @@ To preview the rendered output without actually posting, set
 `DRY_RUN: '1'` in the workflow's `env:` block (temporarily — revert
 when you're done iterating).
 
-### 8. Schedule
+### 7. Schedule
 
 Each target has its own `cron:` line, in UTC, in its own workflow
 file. Edit either to change the schedule or frequency.
@@ -262,15 +236,6 @@ the repo.
 - **No retry logic**: a single repo failing (404, 403, 5xx) is logged
   and skipped; the rest of the digest still posts. A complete GitHub
   outage will result in no digest that day.
-
-## Manual run / debugging
-
-The workflow has a `workflow_dispatch` trigger. From the Actions tab:
-
-- **Run workflow** to trigger an immediate run
-- Add `DRY_RUN=1` as a temporary env var in the workflow to print
-  the digest to the Actions log instead of posting to Mattermost
-  (useful when iterating on the format)
 
 ## Security notes
 
