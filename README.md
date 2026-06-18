@@ -239,8 +239,11 @@ the repo.
   activity from you editing it, so it's unlikely — but if you abandon
   the repo, expect the digest to stop.
 - **Rate limits**: the script makes 1 + (3 × open PRs) API calls per
-  repo. With the 5,000/hr authenticated limit, this is not a concern
-  at expected scale.
+  repo, plus 1 + 1 extra call per merged PR (the closed-PR list
+  endpoint omits `additions`/`deletions`, so each merged PR needs a
+  follow-up detail call to populate the diff column). With the
+  5,000/hr authenticated limit, this is not a concern at expected
+  scale.
 - **No retry logic**: a single repo failing (404, 403, 5xx) is logged
   and skipped; the rest of the digest still posts. A complete GitHub
   outage will result in no digest that day.

@@ -647,6 +647,10 @@ def build_merged_row(
         title = title[:60] + "…"
     author = pr["user"]["login"]
     body_excerpt = _merged_excerpt(pr.get("body"))
+    # additions/deletions are populated by fetch_merged_for_repo via
+    # a follow-up detail call (the list endpoint omits them). The
+    # `or 0` fallback covers the rare case where a single detail
+    # call failed and the PR is still rendered with empty stats.
     additions = pr.get("additions", 0) or 0
     deletions = pr.get("deletions", 0) or 0
     diff_cell = f"+{additions} / -{deletions}"
@@ -704,7 +708,15 @@ def build_merged_section(
 def fetch_merged_for_repo(
     repo_full: str, token: str, since: datetime
 ) -> tuple[str, list[dict[str, Any]]] | None:
-    """Fetch merged PRs for a repo since the cutoff. Returns None on total failure."""
+    """Fetch merged PRs for a repo since the cutoff. Returns None on total failure.
+
+    The GitHub pulls list endpoint (state=closed) does not populate
+    `additions` / `deletions` — those fields only appear on the
+    detail endpoint. So for each merged PR we make a follow-up call
+    to fetch full PR detail and merge those diff stats into the
+    record. If the detail call fails for one PR we log a warning and
+    keep the PR with empty diff stats, rather than dropping it.
+    """
     if "/" not in repo_full:
         print(f"  ! skipping malformed entry: {repo_full!r}", file=sys.stderr)
         return None
@@ -723,6 +735,33 @@ def fetch_merged_for_repo(
             file=sys.stderr,
         )
         return None
+
+    for pr in merged:
+        try:
+            detail = get_pr_detail(owner, repo, pr["number"], token)
+        except urllib.error.HTTPError as e:
+            print(
+                f"  ! {repo_full}#{pr['number']}: HTTP {e.code} on detail "
+                f"— diff stats will be empty",
+                file=sys.stderr,
+            )
+            continue
+        except urllib.error.URLError as e:
+            print(
+                f"  ! {repo_full}#{pr['number']}: network error ({e.reason}) "
+                f"— diff stats will be empty",
+                file=sys.stderr,
+            )
+            continue
+        if not detail:
+            continue
+        # Overlay detail fields onto the list record. We intentionally
+        # don't replace the whole record — the list response has
+        # `merged_at`, the sort key, and we want to preserve it.
+        for k in ("additions", "deletions"):
+            if k in detail:
+                pr[k] = detail[k]
+
     return (repo_full, merged)
 
 
