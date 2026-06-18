@@ -412,7 +412,37 @@ def build_digest(
     lines.append(f"# PR Digest — charmed-hpc — {today}")
     lines.append("")
 
-    if not all_prs:
+    # Fetch merged PRs for the recap section when requested. The fetch
+    # happens here (rather than in main()) so the digest-building
+    # logic is independent of the post target: the only thing main()
+    # decides is whether the digest should include the merged recap.
+    # This block runs BEFORE the "no open PRs" early-return below, so
+    # a digest with zero open PRs but recent merges still renders the
+    # merged recap — otherwise INCLUDE_MERGED would silently no-op on
+    # clean weeks.
+    merged_count = 0
+    merged_section = ""
+    if include_merged:
+        if not token:
+            print(
+                "  ! INCLUDE_MERGED=1 but no GH_TOKEN available — "
+                "skipping merged section",
+                file=sys.stderr,
+            )
+        else:
+            week_ago = now - timedelta(days=merged_window_days)
+            merged_results: list[tuple[str, list[dict[str, Any]]]] = []
+            for repo_full, _prs in repos_with_prs:
+                result = fetch_merged_for_repo(repo_full, token, week_ago)
+                if result is not None and result[1]:
+                    merged_results.append(result)
+            merged_count = sum(len(prs) for _, prs in merged_results)
+            merged_section = build_merged_section(merged_results)
+
+    # Short-circuit only when there's nothing to show at all — no open
+    # PRs AND no merged recap. Otherwise fall through so the Org
+    # summary still gets rendered (e.g. "0 open, N merged this week").
+    if not all_prs and not merged_section:
         lines.append("_No open PRs across tracked repos. :tada:_")
         lines.append("")
         return "\n".join(lines)
@@ -442,29 +472,6 @@ def build_digest(
     needs_attention.sort(key=lambda p: p["created_at"])
     stale.sort(key=lambda p: p["last_activity"], reverse=True)
     active.sort(key=lambda p: p["last_activity"], reverse=True)
-
-    # Fetch merged PRs for the recap section when requested. The fetch
-    # happens here (rather than in main()) so the digest-building
-    # logic is independent of the post target: the only thing main()
-    # decides is whether the digest should include the merged recap.
-    merged_count = 0
-    merged_section = ""
-    if include_merged:
-        if not token:
-            print(
-                "  ! INCLUDE_MERGED=1 but no GH_TOKEN available — "
-                "skipping merged section",
-                file=sys.stderr,
-            )
-        else:
-            week_ago = now - timedelta(days=merged_window_days)
-            merged_results: list[tuple[str, list[dict[str, Any]]]] = []
-            for repo_full, _prs in repos_with_prs:
-                result = fetch_merged_for_repo(repo_full, token, week_ago)
-                if result is not None and result[1]:
-                    merged_results.append(result)
-            merged_count = sum(len(prs) for _, prs in merged_results)
-            merged_section = build_merged_section(merged_results)
 
     lines.append("## Org summary")
     if include_merged:
