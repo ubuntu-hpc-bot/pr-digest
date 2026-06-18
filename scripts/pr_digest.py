@@ -315,11 +315,11 @@ def build_pr_row(pr: dict[str, Any], now: datetime) -> str:
 
     reviewer_list = list(pr["requested_reviewers"])
     if pr["requested_teams"]:
-        reviewer_list = reviewer_list + [f"@{t}" for t in pr["requested_teams"]]
+        reviewer_list = reviewer_list + [t for t in pr["requested_teams"]]
     if pr["draft"]:
         reviewers = "_draft_"
     elif reviewer_list:
-        reviewers = ", ".join(f"@{r}" for r in reviewer_list)
+        reviewers = ", ".join(f"{r}" for r in reviewer_list)
     else:
         reviewers = "_(none)_"
 
@@ -329,10 +329,11 @@ def build_pr_row(pr: dict[str, Any], now: datetime) -> str:
     if pr["top_commenters_all"]:
         rendered = []
         for u, n in pr["top_commenters_all"]:
-            # Render every commenter (including the PR author) as
-            # `@login (N)` with a space, so Mattermost autolinks the
-            # @name to a real mention.
-            rendered.append(f"@{u} ({n})")
+            # Render each commenter as `login (N)` — no @ prefix so
+            # Mattermost/Matrix clients don't autolink to a mention
+            # and ping the user. The space between the login and the
+            # count keeps the column parseable.
+            rendered.append(f"{u} ({n})")
         top = ", ".join(rendered)
         comments_cell = f"{comments_cell} — top: {top}"
 
@@ -341,7 +342,7 @@ def build_pr_row(pr: dict[str, Any], now: datetime) -> str:
         title = title[:50] + "…"
     return (
         f"| [{repo_short}#{number}]({url}) {title} "
-        f"| @{author} | {age} | {last} | {comments_cell} | {reviewers} | {pr['review_state']} |"
+        f"| {author} | {age} | {last} | {comments_cell} | {reviewers} | {pr['review_state']} |"
     )
 
 
@@ -511,7 +512,7 @@ def build_digest(
         )
     lines.append(f"- {len(active)} active")
     if reviewer_load:
-        load_str = ", ".join(f"@{u} ({n})" for u, n in reviewer_load[:5])
+        load_str = ", ".join(f"{u} ({n})" for u, n in reviewer_load[:5])
         lines.append(f"- Reviewer load (top): {load_str}")
     lines.append("")
 
@@ -722,7 +723,7 @@ def build_merged_row(
 
     cells: list[str] = [
         f"[{repo_short}#{number}]({url}) {_esc(title)}",
-        f"@{_esc(author)}",
+        f"{_esc(author)}",
         _esc(body_excerpt) or "_(no description)_",
     ]
     if include_labels:
