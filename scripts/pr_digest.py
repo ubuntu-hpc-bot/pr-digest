@@ -382,6 +382,7 @@ def build_digest(
     include_merged: bool = False,
     token: str | None = None,
     merged_window_days: int = 7,
+    repos: list[str] | None = None,
 ) -> str:
     """Build the full markdown digest string, bucketed by activity tier.
 
@@ -402,6 +403,16 @@ def build_digest(
     `token` is required when `include_merged` is True. If it's
     missing the fetch step is skipped and the digest renders without
     the merged section (a warning is printed to stderr).
+
+    `repos` is the FULL list of repos from repos.yaml, used as the
+    source of truth for the merged-PR fetch. We can't derive it from
+    `repos_with_prs` alone: main() filters out repos with zero open
+    PRs before passing that arg in (correct for the open table — no
+    point rendering an empty bucket), but a repo with no open PRs
+    may still have a PR that was merged yesterday. Passing the full
+    list ensures those repos are scanned for merged activity.
+    Defaults to deriving from `repos_with_prs` keys for backward
+    compatibility / direct callers.
     """
     all_prs: list[dict[str, Any]] = []
     for _repo, prs in repos_with_prs:
@@ -432,7 +443,14 @@ def build_digest(
         else:
             week_ago = now - timedelta(days=merged_window_days)
             merged_results: list[tuple[str, list[dict[str, Any]]]] = []
-            for repo_full, _prs in repos_with_prs:
+            # Use the full repos list (passed in as `repos`) so repos
+            # with zero open PRs are still scanned for recent merges.
+            # If `repos` wasn't provided (e.g. a direct caller of
+            # build_digest), fall back to deriving it from the
+            # repos_with_prs keys.
+            repo_list = repos if repos is not None else [r for r, _ in repos_with_prs]
+            for repo_full in repo_list:
+                print(f"  - {repo_full} (merged)", file=sys.stderr)
                 result = fetch_merged_for_repo(repo_full, token, week_ago)
                 if result is not None and result[1]:
                     merged_results.append(result)
@@ -865,6 +883,7 @@ def main() -> int:
         include_merged=include_merged,
         token=token if include_merged else None,
         merged_window_days=merged_window_days,
+        repos=repos,
     )
 
     if _truthy("DRY_RUN"):
