@@ -636,10 +636,50 @@ def post_to_matrix(
 
 
 def _merged_excerpt(body: str | None) -> str:
-    """Return a short excerpt of a merged PR body, with newlines flattened."""
+    """Return a short excerpt of a merged PR body, with newlines flattened.
+
+    PRs use a template with a header like "Summary of changes",
+    "## Summary", or "Summary:" followed by the actual summary text.
+    We skip everything from the start of the body up to and including
+    the first such header line, so the excerpt starts at the real
+    content rather than template boilerplate.
+
+    If the body has no recognizable Summary header, or the header has
+    no content following it (empty body / empty after header), we fall
+    back to using the whole body (the pre-template behavior) so we
+    don't lose the description for PRs that don't follow the template.
+    """
     if not body:
         return ""
-    flat = " ".join(body.split())
+    lines = body.splitlines()
+    summary_start: int | None = None
+    for i, line in enumerate(lines):
+        stripped = line.strip().lstrip("#").strip().rstrip(":").strip()
+        # Case-insensitive match for any header whose first word is
+        # "summary" — covers "Summary", "Summary of changes",
+        # "## Summary", "### Summary of changes", "Summary:", etc.
+        if stripped and stripped[:7].lower() == "summary":
+            # Take the next non-empty line as the start of the summary.
+            for j in range(i + 1, len(lines)):
+                if lines[j].strip():
+                    summary_start = j
+                    break
+            # If the header has no following content, leave
+            # summary_start as None so we fall back to the whole body.
+            break
+    relevant = (
+        lines[summary_start:]
+        if summary_start is not None
+        else lines
+    )
+    flat = " ".join(l.strip() for l in relevant if l.strip())
+    if not flat:
+        # The Summary header was followed by nothing, or the body
+        # itself was empty after flattening. Fall back to the whole
+        # body so we still show *something* for the PR description.
+        flat = " ".join(l.strip() for l in lines if l.strip())
+    if not flat:
+        return ""
     if len(flat) <= BODY_EXCERPT_CHARS:
         return flat
     return flat[: BODY_EXCERPT_CHARS - 1].rstrip() + "…"
