@@ -4,9 +4,10 @@ One script, two post targets (Mattermost and Matrix), selected by
 the `POST_TARGET` env var. Both modes read `repos.yaml`, query the
 GitHub API for open PRs in each repo, compute reviewer load and
 business-hour staleness, and render a single combined markdown
-digest. The Matrix mode additionally fetches PRs merged in the
-`MERGED_WINDOW` (default 7) most recent days and renders them as a
-"Merged this week" section above the open-PR buckets.
+digest. When `INCLUDE_MERGED=1`, the digest additionally fetches PRs
+merged in the `MERGED_WINDOW` (default 7) most recent days and renders
+them as a "Merged this week" section above the open-PR buckets — this
+is independent of the post target.
 
 Stdlib only — no third-party dependencies.
 """
@@ -378,28 +379,29 @@ def build_digest(
     thresholds: dict[str, Any],
     include_stale: bool = True,
     include_needs_attention: bool = True,
-    merged_count: int | None = None,
-    merged_section: str | None = None,
+    include_merged: bool = False,
+    token: str | None = None,
+    merged_window_days: int = 7,
 ) -> str:
     """Build the full markdown digest string, bucketed by activity tier.
 
-    `include_stale` and `include_needs_attention` let callers (notably
-    the weekly Matrix script) suppress one or both buckets. The Org
-    summary counts always reflect the *full* set, not the displayed
-    subset, so the totals don't lie about what's in the org. The
-    suppressed bucket is just omitted from the rendered sections.
+    `include_stale` and `include_needs_attention` let callers suppress
+    one or both open-PR buckets. The Org summary counts always reflect
+    the *full* set, not the displayed subset, so the totals don't lie
+    about what's in the org. The suppressed bucket is just omitted from
+    the rendered sections.
 
-    `merged_count` is an optional extra summary line for the weekly
-    Matrix recap: when not None, the Org summary includes a
-    "N merged this week" bullet. Pass `0` to make the zero-merged
-    case visible rather than silently omitting the section.
+    `include_merged` is independent of the post target: when True, the
+    digest fetches PRs merged in the last `merged_window_days` days and
+    inserts a "Merged this week" section between the Org summary and
+    the open-PR buckets, plus a "N merged this week" line in the Org
+    summary. The fetch and render happen here so the digest-building
+    logic is decoupled from which backend the post target uses; main()
+    just decides whether to include merged PRs.
 
-    `merged_section` is an optional pre-rendered markdown block (the
-    full "## Merged this week (N)" table from the matrix script).
-    When provided, it is inserted between the Org summary and the
-    first open bucket, so the merged recap leads the rendered
-    output. Pass an empty string to skip it without losing the Org
-    summary's "N merged this week" line.
+    `token` is required when `include_merged` is True. If it's
+    missing the fetch step is skipped and the digest renders without
+    the merged section (a warning is printed to stderr).
     """
     all_prs: list[dict[str, Any]] = []
     for _repo, prs in repos_with_prs:
@@ -441,8 +443,31 @@ def build_digest(
     stale.sort(key=lambda p: p["last_activity"], reverse=True)
     active.sort(key=lambda p: p["last_activity"], reverse=True)
 
+    # Fetch merged PRs for the recap section when requested. The fetch
+    # happens here (rather than in main()) so the digest-building
+    # logic is independent of the post target: the only thing main()
+    # decides is whether the digest should include the merged recap.
+    merged_count = 0
+    merged_section = ""
+    if include_merged:
+        if not token:
+            print(
+                "  ! INCLUDE_MERGED=1 but no GH_TOKEN available — "
+                "skipping merged section",
+                file=sys.stderr,
+            )
+        else:
+            week_ago = now - timedelta(days=merged_window_days)
+            merged_results: list[tuple[str, list[dict[str, Any]]]] = []
+            for repo_full, _prs in repos_with_prs:
+                result = fetch_merged_for_repo(repo_full, token, week_ago)
+                if result is not None and result[1]:
+                    merged_results.append(result)
+            merged_count = sum(len(prs) for _, prs in merged_results)
+            merged_section = build_merged_section(merged_results)
+
     lines.append("## Org summary")
-    if merged_count is not None:
+    if include_merged:
         lines.append(f"- {merged_count} merged this week")
     lines.append(
         f"- {total_prs} open PR{'s' if total_prs != 1 else ''} across {repo_count} "
@@ -466,8 +491,9 @@ def build_digest(
     lines.append("")
 
     # Merged-this-week sits between the Org summary and the open-PR
-    # buckets, so the merged recap leads the rendered output for the
-    # weekly Matrix post. The daily script never passes it.
+    # buckets when INCLUDE_MERGED is set, so the merged recap leads
+    # the rendered output. The empty-string case (no merged PRs)
+    # cleanly skips the section without losing the Org summary line.
     if merged_section:
         lines.append(merged_section.rstrip())
         lines.append("")
@@ -708,8 +734,7 @@ def main() -> int:
     (Needs attention, Active, Stale/dead) render by default.
 
     `POST_TARGET=matrix` — render the open-PR digest (Active only
-    by default) followed by the "Merged this week" section, and
-    POST to a Matrix room using a user access token.
+    by default) and POST to a Matrix room using a user access token.
 
     Common env vars:
       GH_TOKEN         (required) fine-grained GitHub PAT
@@ -720,9 +745,14 @@ def main() -> int:
                        (default: shown)
       INCLUDE_NEEDS_ATTENTION  falsy = hide Needs attention + line
                        (default: shown)
+      INCLUDE_MERGED   truthy = add a "Merged this week" section
+                       + a "N merged this week" line in the Org
+                       summary. Independent of POST_TARGET —
+                       default off; set to 1 in any workflow that
+                       wants the weekly recap.
       REPOS_FILE       path to repos.yaml (default: ./repos.yaml)
-      MERGED_WINDOW    days of merged-PR history (matrix only,
-                       default 7)
+      MERGED_WINDOW    days of merged-PR history (only used when
+                       INCLUDE_MERGED=1, default 7)
 
     Mattermost target also requires:
       MATTERMOST_WEBHOOK_URL
@@ -745,6 +775,7 @@ def main() -> int:
 
     include_stale = _truthy("INCLUDE_STALE", "1")
     include_needs_attention = _truthy("INCLUDE_NEEDS_ATTENTION", "1")
+    include_merged = _truthy("INCLUDE_MERGED")
 
     repos_path = Path(
         os.environ.get("REPOS_FILE", Path(__file__).parent.parent / "repos.yaml")
@@ -763,10 +794,11 @@ def main() -> int:
         if result is not None and result[1]:
             open_results.append(result)
 
-    # Merged-this-week fetch (Matrix mode only).
-    merged_results: list[tuple[str, list[dict[str, Any]]]] = []
-    merged_count = 0
-    if target == "matrix":
+    # Merged-PR fetch is driven by INCLUDE_MERGED, not by target. The
+    # fetch and render happen inside build_digest so the digest shape
+    # is independent of where it gets posted. MERGED_WINDOW still
+    # controls how many days back to look.
+    if include_merged:
         try:
             merged_window_days = int(os.environ.get("MERGED_WINDOW", "7"))
         except ValueError:
@@ -775,41 +807,19 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 2
-        week_ago = now - timedelta(days=merged_window_days)
-        print(
-            f"Fetching merged PRs in the last {merged_window_days} days "
-            f"(since {week_ago.isoformat()})…",
-            file=sys.stderr,
-        )
-        for r in repos:
-            print(f"  - {r} (merged)", file=sys.stderr)
-            result = fetch_merged_for_repo(r, token, week_ago)
-            if result is not None and result[1]:
-                merged_results.append(result)
-        merged_count = sum(len(prs) for _, prs in merged_results)
-
-    merged_section = build_merged_section(merged_results) if target == "matrix" else None
-    # Pass merged_count/merged_section only when matrix mode produced
-    # them; the daily mode never gets a "merged this week" Org summary
-    # line.
-    if target == "matrix":
-        digest = build_digest(
-            open_results,
-            now,
-            thresholds,
-            include_stale=include_stale,
-            include_needs_attention=include_needs_attention,
-            merged_count=merged_count,
-            merged_section=merged_section,
-        )
     else:
-        digest = build_digest(
-            open_results,
-            now,
-            thresholds,
-            include_stale=include_stale,
-            include_needs_attention=include_needs_attention,
-        )
+        merged_window_days = 7  # unused; only read when INCLUDE_MERGED=1
+
+    digest = build_digest(
+        open_results,
+        now,
+        thresholds,
+        include_stale=include_stale,
+        include_needs_attention=include_needs_attention,
+        include_merged=include_merged,
+        token=token if include_merged else None,
+        merged_window_days=merged_window_days,
+    )
 
     if _truthy("DRY_RUN"):
         print(

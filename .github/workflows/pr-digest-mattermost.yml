@@ -40,11 +40,15 @@ jobs:
           # daily Mattermost incoming webhook. matrix = the weekly
           # Matrix room (handled by pr-digest-matrix.yml).
           # INCLUDE_* default to 1; the daily run shows all three
-          # open buckets. Set DRY_RUN=1 to log instead of post.
+          # open buckets. INCLUDE_MERGED=0 keeps the daily post
+          # focused on what's open (the Matrix workflow turns it on
+          # for the weekly recap). Set DRY_RUN=1 to log instead of
+          # post.
           POST_TARGET: mattermost
           DRY_RUN: 0
           INCLUDE_STALE: 1
           INCLUDE_NEEDS_ATTENTION: 1
+          INCLUDE_MERGED: 0
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           MATTERMOST_WEBHOOK_URL: ${{ secrets.MATTERMOST_WEBHOOK_URL }}
           REPOS_FILE: ${{ github.workspace }}/repos.yaml

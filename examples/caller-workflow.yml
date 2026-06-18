@@ -55,6 +55,10 @@ jobs:
           # DRY_RUN: 0                          # 1 = log digest instead of posting
           # INCLUDE_STALE: 1                    # 0 hides the Stale/dead bucket
           # INCLUDE_NEEDS_ATTENTION: 1          # 0 hides the Needs attention bucket
+          # INCLUDE_MERGED: 1                   # 1 adds the "Merged this week" section
+          #                                    # + "N merged this week" Org line.
+          #                                    # Independent of POST_TARGET.
+          # MERGED_WINDOW: 7                    # days of merged-PR history (only used when INCLUDE_MERGED=1)
           # REPOS_FILE: ${{ github.workspace }}/repos.yaml   # default; rarely overridden
 
           # ---- Mattermost target (uncomment for POST_TARGET=mattermost) ----
@@ -63,7 +67,6 @@ jobs:
 
           # ---- Matrix target (uncomment for POST_TARGET=matrix) ----
           # POST_TARGET: matrix
-          # MERGED_WINDOW: 7                    # days of merged-PR history
           # MATRIX_HOMESERVER: ${{ secrets.MATRIX_HOMESERVER }}
           # MATRIX_ACCESS_TOKEN: ${{ secrets.MATRIX_ACCESS_TOKEN }}
           # MATRIX_ROOM_ID: ${{ secrets.MATRIX_ROOM_ID }}

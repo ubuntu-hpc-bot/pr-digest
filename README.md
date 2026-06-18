@@ -22,11 +22,19 @@ the post backend via the `POST_TARGET` env var:
 
 **Matrix** — `.github/workflows/pr-digest-matrix.yml`:
 
-1. Builds the same open-PR digest as the Mattermost run
+1. Builds the same open-PR digest as the Mattermost run, plus a
+   "Merged this week" section (because it sets `INCLUDE_MERGED=1`)
 2. Fetches PRs merged in the last `MERGED_WINDOW` days (default 7),
    with body excerpts, labels, and diff stats
 3. Renders both as a single combined markdown digest
 4. Posts it to a Matrix room using a user access token
+
+The "Merged this week" section is opt-in via the `INCLUDE_MERGED`
+env var, independent of `POST_TARGET`. The Mattermost workflow
+leaves it off (daily check-ins focus on what's open); the Matrix
+workflow turns it on for the weekly recap. Either target can enable
+or disable it without code changes — set/unset `INCLUDE_MERGED` in
+the workflow's `env:` block.
 
 The two targets are independent. Enable either, both, or neither —
 the only thing they share is the same `repos.yaml` and the same
