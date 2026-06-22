@@ -736,37 +736,47 @@ def build_merged_row(
 def build_merged_section(
     repos_with_merged: list[tuple[str, list[dict[str, Any]]]],
 ) -> str:
-    """Render the full 'Merged this week' markdown block.
+    """Render the full 'Merged this week' markdown block as a single list.
 
     Returns an empty string if there are no merged PRs across all
-    repos, so the digest can skip the heading entirely. The Labels
-    column is only included for a repo if at least one of its PRs
-    has a label.
+    repos, so the digest can skip the heading entirely. PRs from all
+    repos are interleaved into one table, sorted by merged_at
+    descending (newest first), so the recap reads as a single
+    timeline rather than per-repo buckets. The repo short name is
+    kept in each PR cell so context isn't lost when two repos share
+    a PR number. The Labels column is included only if at least one
+    merged PR across all repos has a label.
     """
-    total = sum(len(prs) for _, prs in repos_with_merged)
-    if total == 0:
+    # Flatten across repos into a single list, preserving the
+    # repo_full on each record so the row renderer can show the
+    # repo short name. Sort by merged_at desc so the recap reads
+    # as a single timeline.
+    flat: list[tuple[str, dict[str, Any]]] = []
+    for repo_full, prs in repos_with_merged:
+        for pr in prs:
+            flat.append((repo_full, pr))
+    if not flat:
         return ""
 
-    lines: list[str] = [f"## Merged this week ({total})", ""]
+    flat.sort(
+        key=lambda rp: parse_iso(rp[1]["merged_at"]),
+        reverse=True,
+    )
 
-    for repo_full, prs in repos_with_merged:
-        if not prs:
-            continue
+    any_labels = any(pr.get("labels") for _, pr in flat)
+    lines: list[str] = [f"## Merged this week ({len(flat)})", ""]
+
+    if any_labels:
+        lines.append("| PR | Author | Description | Labels | Diff |")
+        lines.append("|---|---|---|---|---|")
+    else:
+        lines.append("| PR | Author | Description | Diff |")
+        lines.append("|---|---|---|---|")
+
+    for repo_full, pr in flat:
         repo_short = repo_full.split("/", 1)[-1]
-        any_labels = any(pr.get("labels") for pr in prs)
-        lines.append(f"### {repo_full} ({len(prs)})")
-        lines.append("")
-
-        if any_labels:
-            lines.append("| PR | Author | Description | Labels | Diff |")
-            lines.append("|---|---|---|---|---|")
-        else:
-            lines.append("| PR | Author | Description | Diff |")
-            lines.append("|---|---|---|---|")
-
-        for pr in prs:
-            lines.append(build_merged_row(pr, repo_short, any_labels))
-        lines.append("")
+        lines.append(build_merged_row(pr, repo_short, any_labels))
+    lines.append("")
 
     return "\n".join(lines)
 
