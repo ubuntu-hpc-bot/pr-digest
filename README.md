@@ -131,45 +131,68 @@ post to rooms they've joined. If the room is end-to-end-encrypted,
 use an unencrypted room instead — the simple HTTP bot can't post
 encrypted messages.
 
-**5c. Get an access token.** From any machine with `curl`, log the
-bot in once:
+**5c. Get an access token.** In Element Web, log in as the bot
+account → click the avatar → **All settings** → **Help & About** →
+the access token is shown there. Copy it. This works for any
+account type, including SSO-only accounts (GitHub, Apple, etc.)
+that don't have a password set.
 
-```bash
-curl -X POST https://matrix.org/_matrix/client/v3/login \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "type": "m.login.password",
-    "user": "pr-digest",
-    "password": "..."
-  }'
-```
-
-The response includes `access_token` and `user_id`. Copy the
-`access_token` — that's the only secret you need to store. The
-homeserver URL (`https://matrix.org` in the example) is also a
+The homeserver URL (`https://matrix.org` in the example) is also a
 secret, just a public one.
 
-If the homeserver is not `matrix.org`, replace the URL in the
-`curl` command with your homeserver's client-API base.
+**5d. Find the room ID.** `MATRIX_ROOM_ID` needs the room's full ID
+(starting with `!`), not its alias (starting with `#`). Element Web
+accepts both in the URL bar, so the address bar alone isn't enough
+to tell which one you have.
 
-**5d. Find the room ID.** In Element Web, open the room →
-Room Settings → Advanced → "Internal room ID". It looks like
-`!abc123:matrix.org`. Or via the API:
+*From the address bar (when Element shows the ID):*
+
+```
+https://app.element.io/#/room/!abc123xyz:matrix.org
+```
+
+If the URL starts with `!`, copy that part as-is. The "Internal
+room ID" shown in Room Settings → Advanced is a shortened display
+version and won't work as `MATRIX_ROOM_ID`.
+
+*From the address bar (when Element shows an alias):*
+
+```
+https://app.element.io/#/room/#hpc-newswire:ubuntu.com
+```
+
+If the URL starts with `#`, that's an alias — resolve it to an ID
+via the directory endpoint. URL-encode the `#` as `%23` and the `:`
+as `%3A`:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  "https://matrix.org/_matrix/client/v3/directory/room/%23hpc-newswire%3Aubuntu.com"
+```
+
+The response includes a `room_id` field starting with `!` — that's
+your `MATRIX_ROOM_ID`. If the alias is on a different homeserver
+than the one in `MATRIX_HOMESERVER`, replace `matrix.org` in the
+URL with the homeserver that owns the alias.
+
+*From the API (rooms the bot has already joined):*
 
 ```bash
 curl -H "Authorization: Bearer $TOKEN" \
   https://matrix.org/_matrix/client/v3/joined_rooms
 ```
 
-The response lists room IDs the bot is a member of.
+The response is a bare list of room IDs with no names, so this only
+helps if the bot is in exactly one room. For multiple rooms, use
+the directory endpoint above with the alias you want.
 
 **5e. Add three secrets:**
 
 | Name | Value |
 |---|---|
 | `MATRIX_HOMESERVER` | The homeserver URL, e.g. `https://matrix.org` |
-| `MATRIX_ACCESS_TOKEN` | The `access_token` from 6c |
-| `MATRIX_ROOM_ID` | The room ID from 6d |
+| `MATRIX_ACCESS_TOKEN` | The `access_token` from 5c |
+| `MATRIX_ROOM_ID` | The room ID from 5d |
 
 **5f. The default Matrix workflow** runs Mondays at 09:00 UTC. Edit
 the `cron:` line in `.github/workflows/pr-digest-matrix.yml` to
