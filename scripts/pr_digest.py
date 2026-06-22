@@ -1086,7 +1086,17 @@ def main() -> int:
             f"---- DRY RUN: not posting to {target} ----",
             file=sys.stderr,
         )
-        print(digest)
+        # Show the same payload the target would actually receive.
+        # For Matrix that's the HTML in `formatted_body` (since
+        # that's what the room renders); for Mattermost it's the
+        # raw markdown (which Mattermost renders natively).
+        if target == "matrix":
+            print("---- formatted_body (HTML) ----", file=sys.stderr)
+            print(_md_to_html(digest))
+            print("---- body (plain text fallback) ----", file=sys.stderr)
+            print(digest)
+        else:
+            print(digest)
         return 0
 
     if target == "matrix":
