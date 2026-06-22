@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.parse
@@ -590,15 +591,162 @@ def post_to_mattermost(webhook_url: str, text: str) -> None:
             )
 
 
+def _md_to_html(text: str) -> str:
+    """Convert digest markdown to HTML for Matrix `formatted_body`.
+
+    Handles the subset of markdown the digest emits: ATX headings
+    (`#`, `##`, `###`), bullet lists (`- `), pipe tables, inline
+    code (`` ` ``), bold (`**`), italic (`_`), and links
+    (`[text](url)`). User content (PR titles, author names, body
+    excerpts) is HTML-escaped before any tag insertion so a PR
+    title containing `<script>` doesn't inject HTML into the room.
+    """
+    # Escape HTML-special chars first. After this, any `<` or `>`
+    # in the output came from a markdown pattern below, not from
+    # the input.
+    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    lines = text.split("\n")
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        # Blank line — emit nothing (block tags below provide spacing).
+        if not stripped:
+            i += 1
+            continue
+
+        # Heading: # / ## / ### (the digest uses up to h3).
+        m = re.match(r"^(#{1,6})\s+(.+)$", stripped)
+        if m:
+            level = len(m.group(1))
+            out.append(f"<h{level}>{_md_inline(m.group(2))}</h{level}>")
+            i += 1
+            continue
+
+        # Table: header row, separator row (|---|---|), then body rows.
+        # The separator is what distinguishes a table from a paragraph
+        # that happens to contain pipes.
+        if (
+            stripped.startswith("|")
+            and i + 1 < len(lines)
+            and re.match(r"^\|[\s\-|:]+\|$", lines[i + 1].strip())
+        ):
+            table_rows = [stripped]
+            i += 2  # skip header + separator
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                table_rows.append(lines[i].strip())
+                i += 1
+            out.append(_md_table(table_rows))
+            continue
+
+        # Bullet list: consecutive lines starting with "- ".
+        if stripped.startswith("- "):
+            items: list[str] = []
+            while i < len(lines) and lines[i].strip().startswith("- "):
+                items.append(_md_inline(lines[i].strip()[2:]))
+                i += 1
+            out.append("<ul>")
+            for item in items:
+                out.append(f"  <li>{item}</li>")
+            out.append("</ul>")
+            continue
+
+        # Paragraph: single line, no special structure.
+        out.append(f"<p>{_md_inline(stripped)}</p>")
+        i += 1
+
+    return "\n".join(out)
+
+
+def _md_inline(text: str) -> str:
+    """Apply inline markdown to an already HTML-escaped string.
+
+    Order matters: links first (so the link text doesn't get
+    re-processed by the bold/code patterns), then inline code,
+    then bold, then italic. The italic pattern uses lookarounds
+    so usernames like `ben_schwarz` don't get partially italicized.
+    """
+    # Links: [text](url). Text is already escaped; the URL needs
+    # `&` re-escaping for the href attribute (the global escape
+    # above already turned `&` into `&amp;`, so this is a no-op
+    # for clean URLs but defensive against double-encoding).
+    def _link_repl(m: re.Match[str]) -> str:
+        link_text = m.group(1)
+        url = m.group(2)
+        return f'<a href="{url}">{link_text}</a>'
+
+    text = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", _link_repl, text)
+
+    # Inline code: `code`. Done before bold so `**foo**` inside
+    # backticks isn't interpreted as bold.
+    text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
+
+    # Bold: **text**.
+    text = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", text)
+
+    # Italic: _text_. The lookarounds prevent matching inside
+    # identifiers like `ben_schwarz` (the `_` is flanked by
+    # alphanumeric chars on at least one side).
+    text = re.sub(
+        r"(?<![A-Za-z0-9])_([^_]+)_(?![A-Za-z0-9])",
+        r"<em>\1</em>",
+        text,
+    )
+
+    return text
+
+
+def _md_table(rows: list[str]) -> str:
+    """Convert a list of markdown table rows to an HTML table string.
+
+    First row is the header; remaining rows are body. Cells are
+    split on `|` and trimmed; the empty strings from the leading
+    and trailing pipes are dropped. Each cell is run through
+    `_md_inline` so links, bold, italic, and code inside cells
+    render correctly.
+    """
+    def _split(row: str) -> list[str]:
+        cells = row.split("|")
+        # Drop the empty strings produced by the leading/trailing
+        # pipes: "| a | b |" splits to ["", " a ", " b ", ""].
+        if cells and cells[0].strip() == "":
+            cells = cells[1:]
+        if cells and cells[-1].strip() == "":
+            cells = cells[:-1]
+        return [_md_inline(c.strip()) for c in cells]
+
+    header = _split(rows[0])
+    body = [_split(r) for r in rows[1:]]
+
+    out = ["<table>", "  <thead>", "    <tr>"]
+    for cell in header:
+        out.append(f"      <th>{cell}</th>")
+    out.append("    </tr>")
+    out.append("  </thead>")
+    if body:
+        out.append("  <tbody>")
+        for row in body:
+            out.append("    <tr>")
+            for cell in row:
+                out.append(f"      <td>{cell}</td>")
+            out.append("    </tr>")
+        out.append("  </tbody>")
+    out.append("</table>")
+    return "\n".join(out)
+
+
 def post_to_matrix(
     homeserver: str, access_token: str, room_id: str, text: str
 ) -> None:
-    """POST `text` as a plain m.text message to a Matrix room.
+    """POST `text` as an HTML m.text message to a Matrix room.
 
-    Uses the user access token (no login on the hot path). The body
-    is sent as both `body` (plain markdown) and `formatted_body` so
-    clients that support HTML rendering can show the formatted
-    version, while others fall back to the plain text.
+    Uses the user access token (no login on the hot path). The
+    digest markdown is converted to HTML for `formatted_body`, so
+    clients like Element render tables, links, and headings
+    natively. The original markdown is kept in `body` as a
+    plain-text fallback for clients that don't render HTML.
     """
     url = f"{homeserver.rstrip('/')}/_matrix/client/v3/rooms/{room_id}/send/m.room.message"
     txn_id = os.urandom(8).hex()
@@ -607,11 +755,7 @@ def post_to_matrix(
         "msgtype": "m.text",
         "body": text,
         "format": "org.matrix.custom.html",
-        # We don't have a real markdown→HTML renderer, so we send the
-        # same markdown string in both fields. Clients that render
-        # `formatted_body` will show it as plain text; the `body`
-        # field is the authoritative plain-text view.
-        "formatted_body": text,
+        "formatted_body": _md_to_html(text),
     }
     req = urllib.request.Request(
         url,
