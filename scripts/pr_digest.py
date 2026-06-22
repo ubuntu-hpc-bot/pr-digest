@@ -591,6 +591,56 @@ def post_to_mattermost(webhook_url: str, text: str) -> None:
             )
 
 
+# Inline CSS used by the HTML renderer. Matrix clients (Element,
+# FluffyChat, Nheko, etc.) reliably support inline `style`
+# attributes but not `<style>` blocks, so every rule lives here
+# and gets applied per-element. Colors use neutral grays that
+# work in both light and dark themes.
+_TABLE_STYLE = (
+    "border-collapse:collapse;"
+    "width:100%;"
+    "font-size:0.9em;"
+    "margin:0.5em 0 1em 0;"
+)
+_TH_STYLE = (
+    "text-align:left;"
+    "padding:6px 10px;"
+    "border:1px solid #ccc;"
+    "background-color:#f5f5f5;"
+    "font-weight:600;"
+)
+_TD_STYLE = (
+    "padding:6px 10px;"
+    "border:1px solid #ccc;"
+    "vertical-align:top;"
+)
+_TR_ODD_STYLE = "background-color:#fafafa;"
+_H1_STYLE = (
+    "font-size:1.4em;"
+    "margin:0.5em 0 0.5em 0;"
+    "padding-bottom:0.3em;"
+    "border-bottom:1px solid #ccc;"
+)
+_H2_STYLE = (
+    "font-size:1.15em;"
+    "margin:1em 0 0.5em 0;"
+    "padding-bottom:0.2em;"
+    "border-bottom:1px solid #eee;"
+)
+_H3_STYLE = "font-size:1.0em;margin:0.8em 0 0.4em 0;"
+_P_STYLE = "margin:0.4em 0;line-height:1.4;"
+_UL_STYLE = "margin:0.4em 0;padding-left:1.5em;"
+_LI_STYLE = "margin:0.15em 0;line-height:1.4;"
+_CODE_STYLE = (
+    "background-color:#f0f0f0;"
+    "padding:1px 4px;"
+    "border-radius:3px;"
+    "font-family:monospace;"
+    "font-size:0.9em;"
+)
+_A_STYLE = "color:#1565c0;text-decoration:none;"
+
+
 def _md_to_html(text: str) -> str:
     """Convert digest markdown to HTML for Matrix `formatted_body`.
 
@@ -621,7 +671,14 @@ def _md_to_html(text: str) -> str:
         m = re.match(r"^(#{1,6})\s+(.+)$", stripped)
         if m:
             level = len(m.group(1))
-            out.append(f"<h{level}>{_md_inline(m.group(2))}</h{level}>")
+            style = {
+                1: _H1_STYLE,
+                2: _H2_STYLE,
+                3: _H3_STYLE,
+            }.get(level, _H3_STYLE)
+            out.append(
+                f'<h{level} style="{style}">{_md_inline(m.group(2))}</h{level}>'
+            )
             i += 1
             continue
 
@@ -647,14 +704,14 @@ def _md_to_html(text: str) -> str:
             while i < len(lines) and lines[i].strip().startswith("- "):
                 items.append(_md_inline(lines[i].strip()[2:]))
                 i += 1
-            out.append("<ul>")
+            out.append(f'<ul style="{_UL_STYLE}">')
             for item in items:
-                out.append(f"  <li>{item}</li>")
+                out.append(f'  <li style="{_LI_STYLE}">{item}</li>')
             out.append("</ul>")
             continue
 
         # Paragraph: single line, no special structure.
-        out.append(f"<p>{_md_inline(stripped)}</p>")
+        out.append(f'<p style="{_P_STYLE}">{_md_inline(stripped)}</p>')
         i += 1
 
     return "\n".join(out)
@@ -675,13 +732,17 @@ def _md_inline(text: str) -> str:
     def _link_repl(m: re.Match[str]) -> str:
         link_text = m.group(1)
         url = m.group(2)
-        return f'<a href="{url}">{link_text}</a>'
+        return f'<a href="{url}" style="{_A_STYLE}">{link_text}</a>'
 
     text = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", _link_repl, text)
 
     # Inline code: `code`. Done before bold so `**foo**` inside
     # backticks isn't interpreted as bold.
-    text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
+    text = re.sub(
+        r"`([^`]+)`",
+        rf'<code style="{_CODE_STYLE}">\1</code>',
+        text,
+    )
 
     # Bold: **text**.
     text = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", text)
@@ -705,7 +766,8 @@ def _md_table(rows: list[str]) -> str:
     split on `|` and trimmed; the empty strings from the leading
     and trailing pipes are dropped. Each cell is run through
     `_md_inline` so links, bold, italic, and code inside cells
-    render correctly.
+    render correctly. Alternating row backgrounds (zebra striping)
+    make wide tables easier to scan.
     """
     def _split(row: str) -> list[str]:
         cells = row.split("|")
@@ -720,17 +782,27 @@ def _md_table(rows: list[str]) -> str:
     header = _split(rows[0])
     body = [_split(r) for r in rows[1:]]
 
-    out = ["<table>", "  <thead>", "    <tr>"]
+    out = [
+        f'<table style="{_TABLE_STYLE}">',
+        "  <thead>",
+        "    <tr>",
+    ]
     for cell in header:
-        out.append(f"      <th>{cell}</th>")
+        out.append(f'      <th style="{_TH_STYLE}">{cell}</th>')
     out.append("    </tr>")
     out.append("  </thead>")
     if body:
         out.append("  <tbody>")
-        for row in body:
-            out.append("    <tr>")
+        for idx, row in enumerate(body):
+            # Zebra striping: odd-indexed rows get a subtle
+            # background. idx is 0-based so the first body row
+            # (idx=0) is unstyled, the second (idx=1) gets the
+            # background, etc.
+            row_style = _TR_ODD_STYLE if idx % 2 == 1 else ""
+            tr_attrs = f' style="{row_style}"' if row_style else ""
+            out.append(f"    <tr{tr_attrs}>")
             for cell in row:
-                out.append(f"      <td>{cell}</td>")
+                out.append(f'      <td style="{_TD_STYLE}">{cell}</td>')
             out.append("    </tr>")
         out.append("  </tbody>")
     out.append("</table>")
@@ -1093,8 +1165,6 @@ def main() -> int:
         if target == "matrix":
             print("---- formatted_body (HTML) ----", file=sys.stderr)
             print(_md_to_html(digest))
-            print("---- body (plain text fallback) ----", file=sys.stderr)
-            print(digest)
         else:
             print(digest)
         return 0
