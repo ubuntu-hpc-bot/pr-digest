@@ -137,13 +137,23 @@ the access token is shown there. Copy it. This works for any
 account type, including SSO-only accounts (GitHub, Apple, etc.)
 that don't have a password set.
 
+**Security best practice**: Matrix access tokens issued via Element
+do not automatically expire. Set a calendar reminder to rotate the
+token every 90 days (same schedule as the GitHub PAT). To rotate:
+log out and back in to the bot account to invalidate the old token,
+get the new token from Settings, and update the `MATRIX_ACCESS_TOKEN`
+secret in the repository.
+
 The homeserver URL (`https://matrix.org` in the example) is also a
-secret, just a public one.
+secret, just a public one. **Note**: The homeserver must use HTTPS —
+HTTP URLs will be rejected by the script for security reasons.
 
 **5d. Find the room ID.** `MATRIX_ROOM_ID` needs the room's full ID
 (starting with `!`), not its alias (starting with `#`). Element Web
 accepts both in the URL bar, so the address bar alone isn't enough
-to tell which one you have.
+to tell which one you have. **Note**: The script validates that the
+room ID starts with `!` and will reject aliases for security and
+correctness.
 
 *From the address bar (when Element shows the ID):*
 
@@ -254,6 +264,9 @@ the repo.
 - **PAT expiration**: when the fine-grained PAT expires, the script
   starts failing silently (no digest appears, but the Action run
   shows a 401). Set a calendar reminder to rotate every 90 days.
+- **Matrix token expiration**: Matrix access tokens obtained from
+  Element do not expire automatically. Set a calendar reminder to
+  rotate every 90 days (same as the GitHub PAT).
 - **GitHub Actions "approximate" timing**: scheduled runs can be
   delayed up to ~30 minutes under load. For any of the digests,
   this is fine.
@@ -261,12 +274,6 @@ the repo.
   days, GitHub may pause its scheduled workflows. This repo will see
   activity from you editing it, so it's unlikely — but if you abandon
   the repo, expect the digest to stop.
-- **Rate limits**: the script makes 1 + (3 × open PRs) API calls per
-  repo, plus 1 + 1 extra call per merged PR (the closed-PR list
-  endpoint omits `additions`/`deletions`, so each merged PR needs a
-  follow-up detail call to populate the diff column). With the
-  5,000/hr authenticated limit, this is not a concern at expected
-  scale.
 - **No retry logic**: a single repo failing (404, 403, 5xx) is logged
   and skipped; the rest of the digest still posts. A complete GitHub
   outage will result in no digest that day.
@@ -275,10 +282,20 @@ the repo.
 
 - The Mattermost webhook URL is a credential. Treat it like a password.
   Anyone with the URL can post to that channel as the webhook.
+- The Matrix access token has full privileges of the bot account. Treat
+  it like a password and rotate it regularly (recommendation: every 90
+  days, same as the GitHub PAT).
 - The fine-grained PAT is scoped to read-only on the specific repos
   you select. It does not grant write access to anything.
-- Both are stored as GitHub Actions encrypted secrets, which are not
-  exposed to forks or to PRs from forks.
+- All credentials are stored as GitHub Actions encrypted secrets, which
+  are not exposed to forks or to PRs from forks.
+- **TLS/SSL verification**: The script uses Python's `urllib` with
+  default settings, which means:
+  - All HTTPS connections verify certificates using the system
+    certificate store
+  - Certificate verification cannot be disabled
+  - Matrix homeserver URLs must use HTTPS (HTTP is rejected)
+  - Mattermost webhook URLs should use HTTPS (strongly recommended)
 
 
 

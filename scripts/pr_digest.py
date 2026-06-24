@@ -586,8 +586,15 @@ def post_to_mattermost(webhook_url: str, text: str) -> None:
     with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
         body = resp.read().decode("utf-8", errors="replace")
         if resp.status >= 300:
+            # Log response body to stderr only (not in exception message)
+            # to avoid potential webhook URL leakage in exception traces
+            print(
+                f"Mattermost webhook error response body: {body[:300]}",
+                file=sys.stderr,
+            )
             raise RuntimeError(
-                f"Mattermost webhook returned {resp.status}: {body[:300]}"
+                f"Mattermost webhook returned {resp.status} "
+                "(see GitHub Actions logs for full error details)"
             )
 
 
@@ -842,8 +849,15 @@ def post_to_matrix(
     with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
         body = resp.read().decode("utf-8", errors="replace")
         if resp.status >= 300:
+            # Log response body to stderr only (not in exception message)
+            # to avoid potential token leakage in exception traces
+            print(
+                f"Matrix API error response body: {body[:300]}",
+                file=sys.stderr,
+            )
             raise RuntimeError(
-                f"Matrix API returned {resp.status}: {body[:300]}"
+                f"Matrix API returned {resp.status} "
+                "(see GitHub Actions logs for full error details)"
             )
 
 
@@ -1184,6 +1198,21 @@ def main() -> int:
             print(
                 f"Missing required env vars for POST_TARGET=matrix: "
                 f"{', '.join(missing)}",
+                file=sys.stderr,
+            )
+            return 2
+        # Validate HTTPS for homeserver
+        if not homeserver.startswith("https://"):  # type: ignore[union-attr]
+            print(
+                "MATRIX_HOMESERVER must use HTTPS (e.g. https://matrix.org)",
+                file=sys.stderr,
+            )
+            return 2
+        # Validate room_id format
+        if not room_id.startswith("!"):  # type: ignore[union-attr]
+            print(
+                "MATRIX_ROOM_ID must be a room ID starting with '!' "
+                "(not an alias starting with '#')",
                 file=sys.stderr,
             )
             return 2
