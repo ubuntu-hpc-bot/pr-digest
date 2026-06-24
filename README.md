@@ -1,8 +1,5 @@
-PR Digest creates summarizations of the pull requests for the `charmed-hpc` org, with two configurable post
-**targets**: Mattermost and Matrix. Each target has its own
-workflow, its own schedule (cron, in UTC), and its own secrets.
-The digests are bucketed by activity (Merged this week, Needs attention, Active,
-Stale / dead) with comment and reviewer activity. 
+PR Digest summarizes pull requests for the `charmed-hpc` org and posts them to one of two configurable **targets**: Mattermost or Matrix. Each target has its own workflow, its own schedule (cron, in UTC), and its own secrets. Digests are bucketed by activity (Merged this week, Needs attention, Active, Stale / dead) and include comment and reviewer activity.
+
 *Made with AI agents (Minimax primarily).*
 
 ## What it does
@@ -38,13 +35,9 @@ the workflow's `env:` block.
 
 The two targets are independent. Enable either, both, or neither —
 the only thing they share is the same `repos.yaml` and the same
-GitHub PAT. In this repo, the Mattermost workflow is configured to
-run weekdays at 09:00 UTC and the Matrix workflow is configured to
-run Mondays at 09:00 UTC, but the cron expressions in each
-workflow file are free to change.
+GitHub PAT. In this repo, the Mattermost workflow runs weekdays at 09:00 UTC and the Matrix workflow runs Mondays at 09:00 UTC. The cron expressions in each workflow file can be edited freely.
 
-No long-lived service. No external scheduler. Runs in a GitHub-hosted
-runner that's destroyed after each run.
+There is no long-lived service or external scheduler. Each run executes on a GitHub-hosted runner that is destroyed when the run completes.
 
 ## Files in this repo
 
@@ -62,9 +55,7 @@ examples/caller-workflow.yml     # Reference for triggering from elsewhere
 
 ### 1. Create this repo
 
-Create a **private** repo under your user account. The exact name
-doesn't matter, but `pr-digest` is the convention used here. Push the
-contents of this directory.
+Create a **private** repo under your user account (the name `pr-digest` is the convention used here) and push the contents of this directory.
 
 ### 2. Create a fine-grained GitHub PAT
 
@@ -107,23 +98,19 @@ If incoming webhooks are disabled at the system level, ask your
 Mattermost admin to enable them under
 **System Console → Integrations → Integration Management**.
 
-**5b. Add the secret:**
+**4b. Add the secret:**
 
 | Name | Value |
 |---|---|
-| `MATTERMOST_WEBHOOK_URL` | The webhook URL from step 2 |
+| `MATTERMOST_WEBHOOK_URL` | The webhook URL from step 4a |
 
-**5c. The default Mattermost workflow** runs weekdays at 09:00 UTC.
+**4c. The default Mattermost workflow** runs weekdays at 09:00 UTC.
 Edit the `cron:` line in `.github/workflows/pr-digest-mattermost.yml`
 to change the schedule or frequency.
 
 ### 5. Set up the Matrix target
 
-**5a. Create a bot account.** Register a regular Matrix account on
-your homeserver, e.g. `@pr-digest:matrix.org`. Use Element Web (or
-any client) to sign up, set a password, and complete any email or
-captcha verification. Treat the password like a normal account
-password — rotate it the same way.
+**5a. Create a bot account.** Register a regular Matrix account on your homeserver (e.g. `@pr-digest:matrix.org`). Use Element Web or any other client to sign up, set a password, and complete any email or captcha verification. Rotate the password on the same schedule as any other account credential.
 
 **5b. Join the target room.** From the bot account, join the room
 you want digests in (e.g. `#pr-digest:matrix.org`). Bots can only
@@ -144,9 +131,7 @@ log out and back in to the bot account to invalidate the old token,
 get the new token from Settings, and update the `MATRIX_ACCESS_TOKEN`
 secret in the repository.
 
-The homeserver URL (`https://matrix.org` in the example) is also a
-secret, just a public one. **Note**: The homeserver must use HTTPS —
-HTTP URLs will be rejected by the script for security reasons.
+The homeserver URL (`https://matrix.org` in the example) is also stored as a secret, though it is public information. **Note**: The homeserver must use HTTPS — HTTP URLs are rejected by the script for security reasons.
 
 **5d. Find the room ID.** `MATRIX_ROOM_ID` needs the room's full ID
 (starting with `!`), not its alias (starting with `#`). Element Web
@@ -231,33 +216,6 @@ file. Edit either to change the schedule or frequency.
 
 - `.github/workflows/pr-digest-mattermost.yml` — Mattermost target
 - `.github/workflows/pr-digest-matrix.yml` — Matrix target
-
-## Migrating the project to a new org
-
-If the `charmed-hpc` org moves or gets renamed:
-
-1. Issue a new fine-grained PAT scoped to the new repo names in the
-   new org
-2. Update `repos.yaml` with the new `<owner>/<repo>` entries
-3. Update the `GH_TOKEN` secret with the new PAT value
-4. No other change needed — script, workflow, webhook, schedule all
-   stay the same
-
-There may be a one-day gap between migration and the first successful
-digest on the new org. To avoid it, create the new PAT in advance and
-swap the secret in the same commit as the `repos.yaml` change.
-
-## Migrating this digest infra to a different repo
-
-1. GitHub transfer: Settings → Danger Zone → Transfer ownership
-   (new owner accepts)
-2. **OR** clone-push: `git clone <old-url>`, create new repo, push
-3. **Secrets do not transfer.** Re-add `GH_TOKEN` and
-   `MATTERMOST_WEBHOOK_URL` in the new repo's settings. The values
-   themselves can be reused.
-
-The workflow schedule, Actions history, and git history all move with
-the repo.
 
 ## Limitations and known issues
 
