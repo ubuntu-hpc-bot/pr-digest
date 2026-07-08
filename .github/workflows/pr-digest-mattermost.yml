@@ -45,7 +45,7 @@ jobs:
           # for the weekly recap). Set DRY_RUN=1 to log instead of
           # post.
           POST_TARGET: mattermost
-          DRY_RUN: 1
+          DRY_RUN: 0
           INCLUDE_STALE: 1
           INCLUDE_NEEDS_ATTENTION: 1
           INCLUDE_MERGED: 0
