@@ -225,7 +225,9 @@ def collect_pr_activity(pr: dict[str, Any], token: str) -> dict[str, Any]:
         "draft": bool(pr.get("draft", False)),
         "additions": pr.get("additions", 0),
         "deletions": pr.get("deletions", 0),
-        "review_state": derive_review_state(detail, reviews),
+        "review_state": derive_review_state(
+            detail, reviews, draft=bool(pr.get("draft", False))
+        ),
         "comment_count": comment_count,
         "external_comment_count": external_comment_count,
         "external_participant_count": external_participant_count,
@@ -233,8 +235,16 @@ def collect_pr_activity(pr: dict[str, Any], token: str) -> dict[str, Any]:
     }
 
 
-def derive_review_state(detail: dict[str, Any], reviews: list[dict[str, Any]]) -> str:
-    """Summarize the latest review state on a PR."""
+def derive_review_state(
+    detail: dict[str, Any], reviews: list[dict[str, Any]], draft: bool = False
+) -> str:
+    """Summarize the latest review state on a PR.
+
+    Draft PRs always report "Draft" — they're not ready for review, so
+    the normal review-state derivation doesn't apply.
+    """
+    if draft:
+        return "Draft"
     latest_state = None
     latest_submitted = None
     for r in reviews:
