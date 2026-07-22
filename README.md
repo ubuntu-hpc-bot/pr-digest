@@ -12,10 +12,11 @@ the post backend via the `POST_TARGET` env var:
 
 1. Reads the list of repos from `repos.yaml`
 2. Queries the GitHub API for open PRs in each
-3. Buckets PRs into Needs attention, Active, and Stale / dead using
+3. Excludes bot-authored PRs (dependabot, renovate, etc.)
+4. Buckets PRs into Needs attention, Active, and Stale / dead using
    business-hour thresholds
-4. Renders a single combined markdown digest
-5. Posts it to a Mattermost incoming webhook
+5. Renders a single combined markdown digest
+6. Posts it to a Mattermost incoming webhook
 
 **Matrix** — `.github/workflows/pr-digest-matrix.yml`:
 
@@ -23,8 +24,19 @@ the post backend via the `POST_TARGET` env var:
    "Merged this week" section (because it sets `INCLUDE_MERGED=1`)
 2. Fetches PRs merged in the last `MERGED_WINDOW` days (default 7),
    with body excerpts, labels, and diff stats
-3. Renders both as a single combined markdown digest
-4. Posts it to a Matrix room using a user access token
+3. Excludes bot-authored PRs from both open and merged sections
+4. Renders both as a single combined markdown digest
+5. Posts it to a Matrix room using a user access token
+
+**Dependabot (bi-weekly)** —
+`.github/workflows/pr-digest-mattermost-dependabot.yml`:
+
+1. Reads the list of repos from `repos.yaml`
+2. Queries the GitHub API for open and recently-merged bot-authored
+   PRs only (dependabot, renovate, etc.)
+3. Renders a single combined markdown digest
+4. Posts it to a Mattermost incoming webhook on the 1st and 15th of
+   each month
 
 The "Merged this week" section is opt-in via the `INCLUDE_MERGED`
 env var, independent of `POST_TARGET`. The Mattermost workflow
@@ -33,9 +45,29 @@ workflow turns it on for the weekly recap. Either target can enable
 or disable it without code changes — set/unset `INCLUDE_MERGED` in
 the workflow's `env:` block.
 
+### Bot filtering
+
+Two mutually exclusive env vars control which PRs appear in the
+digest:
+
+- **`EXCLUDE_BOTS: 1`** — drops any PR authored by a GitHub bot
+  account (login ending in `[bot]`, e.g. `dependabot[bot]`,
+  `renovate[bot]`). Used by the daily Mattermost and weekly Matrix
+  workflows to keep the human-facing digest focused.
+- **`INCLUDE_ONLY_BOTS: 1`** — keeps *only* bot-authored PRs. Used
+  by the bi-weekly dependabot digest so the team can review
+  automated dependency bumps in a single, periodic summary.
+
+When neither is set (the default), all PRs appear — both human and
+bot. Setting both is an error; the script exits with code 2.
+
+### Independence
 The two targets are independent. Enable either, both, or neither —
 the only thing they share is the same `repos.yaml` and the same
-GitHub PAT. In this repo, the Mattermost workflow runs weekdays at 09:00 UTC and the Matrix workflow runs Mondays at 09:00 UTC. The cron expressions in each workflow file can be edited freely.
+GitHub PAT. In this repo, the Mattermost workflow (human PRs) runs
+weekdays at 09:00 UTC, the dependabot workflow runs on the 1st and
+15th of each month, and the Matrix workflow runs Mondays at 09:00
+UTC. The cron expressions in each workflow file can be edited freely.
 
 There is no long-lived service or external scheduler. Each run executes on a GitHub-hosted runner that is destroyed when the run completes.
 
@@ -212,9 +244,10 @@ when you're done iterating).
 ### 7. Schedule
 
 Each target has its own `cron:` line, in UTC, in its own workflow
-file. Edit either to change the schedule or frequency.
+file. Edit any to change the schedule or frequency.
 
 - `.github/workflows/pr-digest-mattermost.yml` — Mattermost target
+- `.github/workflows/pr-digest-mattermost-dependabot.yml` — Dependabot target
 - `.github/workflows/pr-digest-matrix.yml` — Matrix target
 
 ## Limitations and known issues

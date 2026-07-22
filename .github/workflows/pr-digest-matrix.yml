@@ -42,6 +42,7 @@ jobs:
           # far back merged PRs are fetched, in days.
           POST_TARGET: matrix
           DRY_RUN: 0
+          EXCLUDE_BOTS: 1
           INCLUDE_STALE: 0
           INCLUDE_NEEDS_ATTENTION: 1
           INCLUDE_MERGED: 1

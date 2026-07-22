@@ -53,6 +53,21 @@ def _truthy(name: str, default: str = "") -> bool:
     return str(raw).strip() in _TRUTHY
 
 
+_BOT_SUFFIX = "[bot]"
+
+
+def _is_bot(login: str) -> bool:
+    """Return True if `login` is a GitHub bot account.
+
+    GitHub bot accounts (dependabot, renovate, mergify, etc.) share
+    the convention of ending their username with `[bot]`. This helper
+    is used to decide whether to include or exclude bot-authored PRs
+    from the digest, based on the EXCLUDE_BOTS / INCLUDE_ONLY_BOTS env
+    vars.
+    """
+    return login.endswith(_BOT_SUFFIX)
+
+
 def http_get(url: str, token: str) -> dict[str, Any] | list[Any]:
     """GET a JSON resource from the GitHub API. Raises on non-2xx."""
     req = urllib.request.Request(
@@ -395,6 +410,8 @@ def build_digest(
     token: str | None = None,
     merged_window_days: int = 7,
     repos: list[str] | None = None,
+    exclude_bots: bool = False,
+    include_only_bots: bool = False,
 ) -> str:
     """Build the full markdown digest string, bucketed by activity tier.
 
@@ -425,6 +442,11 @@ def build_digest(
     list ensures those repos are scanned for merged activity.
     Defaults to deriving from `repos_with_prs` keys for backward
     compatibility / direct callers.
+
+    `exclude_bots` and `include_only_bots` are forwarded to the
+    merged-PR fetch so that bot filtering applies consistently to
+    both open and merged PRs. When neither is set (the default), all
+    PRs are included.
     """
     all_prs: list[dict[str, Any]] = []
     for _repo, prs in repos_with_prs:
@@ -463,7 +485,11 @@ def build_digest(
             repo_list = repos if repos is not None else [r for r, _ in repos_with_prs]
             for repo_full in repo_list:
                 print(f"  - {repo_full} (merged)", file=sys.stderr)
-                result = fetch_merged_for_repo(repo_full, token, week_ago)
+                result = fetch_merged_for_repo(
+                    repo_full, token, week_ago,
+                    exclude_bots=exclude_bots,
+                    include_only_bots=include_only_bots,
+                )
                 if result is not None and result[1]:
                     merged_results.append(result)
             merged_count = sum(len(prs) for _, prs in merged_results)
@@ -551,9 +577,20 @@ def build_digest(
 
 
 def fetch_repo(
-    repo_full: str, token: str
+    repo_full: str,
+    token: str,
+    *,
+    exclude_bots: bool = False,
+    include_only_bots: bool = False,
 ) -> tuple[str, list[dict[str, Any]]] | None:
-    """Fetch all open PRs for a repo with enriched info. Returns None on total failure."""
+    """Fetch all open PRs for a repo with enriched info. Returns None on total failure.
+
+    When `exclude_bots` is True, PRs authored by bot accounts (login
+    ending in `[bot]`) are silently dropped. When `include_only_bots`
+    is True, only bot-authored PRs are kept (all human PRs are
+    dropped). The two flags are mutually exclusive — passing both is a
+    caller error.
+    """
     if "/" not in repo_full:
         print(f"  ! skipping malformed entry: {repo_full!r}", file=sys.stderr)
         return None
@@ -569,6 +606,11 @@ def fetch_repo(
 
     enriched: list[dict[str, Any]] = []
     for pr in raw_prs:
+        author_login = pr.get("user", {}).get("login", "")
+        if exclude_bots and _is_bot(author_login):
+            continue
+        if include_only_bots and not _is_bot(author_login):
+            continue
         try:
             enriched.append(collect_pr_activity(pr, token))
         except urllib.error.HTTPError as e:
@@ -1022,7 +1064,12 @@ def build_merged_section(
 
 
 def fetch_merged_for_repo(
-    repo_full: str, token: str, since: datetime
+    repo_full: str,
+    token: str,
+    since: datetime,
+    *,
+    exclude_bots: bool = False,
+    include_only_bots: bool = False,
 ) -> tuple[str, list[dict[str, Any]]] | None:
     """Fetch merged PRs for a repo since the cutoff. Returns None on total failure.
 
@@ -1032,6 +1079,11 @@ def fetch_merged_for_repo(
     to fetch full PR detail and merge those diff stats into the
     record. If the detail call fails for one PR we log a warning and
     keep the PR with empty diff stats, rather than dropping it.
+
+    Bot filtering works the same as `fetch_repo`: `exclude_bots` drops
+    bot-authored PRs, `include_only_bots` keeps *only* bot-authored
+    PRs. Filtering happens before the detail calls to avoid wasting
+    API requests.
     """
     if "/" not in repo_full:
         print(f"  ! skipping malformed entry: {repo_full!r}", file=sys.stderr)
@@ -1051,6 +1103,12 @@ def fetch_merged_for_repo(
             file=sys.stderr,
         )
         return None
+
+    # Filter merged PRs before spending API calls on detail
+    if exclude_bots:
+        merged = [pr for pr in merged if not _is_bot(pr.get("user", {}).get("login", ""))]
+    if include_only_bots:
+        merged = [pr for pr in merged if _is_bot(pr.get("user", {}).get("login", ""))]
 
     for pr in merged:
         try:
@@ -1108,6 +1166,11 @@ def main() -> int:
       REPOS_FILE       path to repos.yaml (default: ./repos.yaml)
       MERGED_WINDOW    days of merged-PR history (only used when
                        INCLUDE_MERGED=1, default 7)
+      EXCLUDE_BOTS     truthy = drop PRs authored by bot accounts
+                       (login ending in `[bot]`). Mutually exclusive
+                       with INCLUDE_ONLY_BOTS.
+      INCLUDE_ONLY_BOTS truthy = keep *only* bot-authored PRs.
+                       Mutually exclusive with EXCLUDE_BOTS.
 
     Mattermost target also requires:
       MATTERMOST_WEBHOOK_URL
@@ -1132,6 +1195,15 @@ def main() -> int:
     include_needs_attention = _truthy("INCLUDE_NEEDS_ATTENTION", "1")
     include_merged = _truthy("INCLUDE_MERGED")
 
+    exclude_bots = _truthy("EXCLUDE_BOTS")
+    include_only_bots = _truthy("INCLUDE_ONLY_BOTS")
+    if exclude_bots and include_only_bots:
+        print(
+            "EXCLUDE_BOTS and INCLUDE_ONLY_BOTS are mutually exclusive",
+            file=sys.stderr,
+        )
+        return 2
+
     repos_path = Path(
         os.environ.get("REPOS_FILE", Path(__file__).parent.parent / "repos.yaml")
     )
@@ -1145,7 +1217,9 @@ def main() -> int:
     open_results: list[tuple[str, list[dict[str, Any]]]] = []
     for r in repos:
         print(f"  - {r} (open)", file=sys.stderr)
-        result = fetch_repo(r, token)
+        result = fetch_repo(
+            r, token, exclude_bots=exclude_bots, include_only_bots=include_only_bots
+        )
         if result is not None and result[1]:
             open_results.append(result)
 
@@ -1175,6 +1249,8 @@ def main() -> int:
         token=token if include_merged else None,
         merged_window_days=merged_window_days,
         repos=repos,
+        exclude_bots=exclude_bots,
+        include_only_bots=include_only_bots,
     )
 
     if _truthy("DRY_RUN"):
