@@ -529,6 +529,15 @@ def build_digest(
     stale.sort(key=lambda p: p["last_activity"], reverse=True)
     active.sort(key=lambda p: p["last_activity"], reverse=True)
 
+    # Draft PRs get their own section — pull them out of all buckets
+    # so they aren't scattered across active / needs-attention / stale.
+    drafts: list[dict[str, Any]] = []
+    for bucket in (needs_attention, active, stale):
+        drafts.extend([pr for pr in bucket if pr["draft"]])
+    for bucket in (needs_attention, active, stale):
+        bucket[:] = [pr for pr in bucket if not pr["draft"]]
+    drafts.sort(key=lambda p: p["last_activity"], reverse=True)
+
     lines.append("## Org summary")
     if include_merged:
         lines.append(f"- {merged_count} merged this week")
@@ -548,6 +557,8 @@ def build_digest(
             f"≥ {int(thresholds['stale_min_hours'])}h)"
         )
     lines.append(f"- {len(active)} active")
+    if drafts:
+        lines.append(f"- {len(drafts)} draft{'' if len(drafts) == 1 else 's'}")
     if reviewer_load:
         load_str = ", ".join(f"{u} ({n})" for u, n in reviewer_load[:5])
         lines.append(f"- Reviewer load (top): {load_str}")
@@ -565,6 +576,8 @@ def build_digest(
     if include_needs_attention:
         rendered_buckets.append(("Needs attention", needs_attention))
     rendered_buckets.append(("Active", active))
+    if drafts:
+        rendered_buckets.append(("Drafts", drafts))
     if include_stale:
         rendered_buckets.append(("Stale / dead", stale))
 
