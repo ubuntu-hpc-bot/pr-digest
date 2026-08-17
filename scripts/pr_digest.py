@@ -453,9 +453,6 @@ def build_digest(
         all_prs.extend(prs)
 
     today = now.strftime("%Y-%m-%d")
-    lines: list[str] = []
-    lines.append(f"# PR Digest — charmed-hpc — {today}")
-    lines.append("")
 
     # Fetch merged PRs for the recap section when requested. The fetch
     # happens here (rather than in main()) so the digest-building
@@ -467,6 +464,7 @@ def build_digest(
     # clean weeks.
     merged_count = 0
     merged_section = ""
+    merged_results: list[tuple[str, list[dict[str, Any]]]] = []
     if include_merged:
         if not token:
             print(
@@ -476,7 +474,6 @@ def build_digest(
             )
         else:
             week_ago = now - timedelta(days=merged_window_days)
-            merged_results: list[tuple[str, list[dict[str, Any]]]] = []
             # Use the full repos list (passed in as `repos`) so repos
             # with zero open PRs are still scanned for recent merges.
             # If `repos` wasn't provided (e.g. a direct caller of
@@ -494,6 +491,18 @@ def build_digest(
                     merged_results.append(result)
             merged_count = sum(len(prs) for _, prs in merged_results)
             merged_section = build_merged_section(merged_results)
+
+    # The header names the span of time this review covers: from the
+    # oldest PR (open or merged) in scope through today.
+    created_dates = [pr["created_at"] for pr in all_prs]
+    for _repo, prs in merged_results:
+        created_dates.extend(pr["created_at"] for pr in prs)
+    if created_dates:
+        span_start = parse_iso(min(created_dates)).strftime("%Y-%m-%d")
+        span = f"{span_start} → {today}"
+    else:
+        span = today
+    lines: list[str] = [f"# Bot Reviews — charmed-hpc — {span}", ""]
 
     # Short-circuit only when there's nothing to show at all — no open
     # PRs AND no merged recap. Otherwise fall through so the Org
