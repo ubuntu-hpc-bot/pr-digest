@@ -347,7 +347,7 @@ def build_issue_digest(
     lines.append("")
 
     for label in PRIORITY_ORDER:
-        section = build_issue_section(label, [("", by_priority[label])], now)
+        section = build_issue_section(label, by_priority[label], now)
         if section:
             lines.append(section.rstrip())
             lines.append("")
