@@ -267,23 +267,18 @@ def build_issue_row(issue: dict[str, Any], repo_full: str, now: datetime) -> str
 
 
 def build_issue_section(
-    title: str, repo_issues: list[tuple[str, list[dict[str, Any]]]], now: datetime
+    title: str, repo_issues: list[tuple[str, dict[str, Any]]], now: datetime
 ) -> str:
     """Render a markdown section (heading + table) for a priority bucket.
 
-    `repo_issues` is a list of (repo_full, issues) pairs; we
-    flatten across repos and sort by creation date ascending so
-    the oldest (most overdue) issue sits at the top. Returns an
-    empty string when there are no issues, so the caller can skip
-    the heading and table entirely.
+    `repo_issues` is a list of (repo_full, issue) pairs; we sort by
+    creation date ascending so the oldest (most overdue) issue sits
+    at the top. Returns an empty string when there are no issues, so
+    the caller can skip the heading and table entirely.
     """
-    flat: list[tuple[str, dict[str, Any]]] = []
-    for repo_full, issues in repo_issues:
-        for issue in issues:
-            flat.append((repo_full, issue))
-    if not flat:
+    if not repo_issues:
         return ""
-    flat.sort(key=lambda ri: parse_iso(ri[1]["created_at"]))
+    flat = sorted(repo_issues, key=lambda ri: parse_iso(ri[1]["created_at"]))
 
     lines = [f"## {title} ({len(flat)})", ""]
     lines.append("| Issue | Author | Age | Last activity | Labels | Assignees | Description |")
