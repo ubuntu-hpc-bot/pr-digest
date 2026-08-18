@@ -311,10 +311,11 @@ def build_untriaged_section(untriaged: list[tuple[str, dict[str, Any]]]) -> str:
     Unlike the priority buckets (a single flat table), untriaged
     issues are rolled up into one row per repo so the reader can
     see at a glance which repos carry un-prioritized backlog. The
-    "Priority labels applied" column is always "none" here because
-    untriaged issues carry no P-* label by definition. Returns an
-    empty string when there are no untriaged issues, so the caller
-    can skip the section entirely.
+    "Labels" column aggregates the non-priority labels actually
+    present on that repo's untriaged issues, so the reader can see
+    what kind of work is waiting. Returns an empty string when
+    there are no untriaged issues, so the caller can skip the
+    section entirely.
     """
     if not untriaged:
         return ""
@@ -323,12 +324,21 @@ def build_untriaged_section(untriaged: list[tuple[str, dict[str, Any]]]) -> str:
         by_repo.setdefault(repo_full, []).append(issue)
 
     lines = [f"## Untriaged (no priority label) ({len(untriaged)})", ""]
-    lines.append("| Repo | Open issues | Priority labels applied |")
+    lines.append("| Repo | Open issues | Labels |")
     lines.append("|---|---|---|")
     for repo_full in sorted(by_repo):
         repo_short = repo_full.split("/", 1)[-1]
         numbers = ", ".join(f"#{issue['number']}" for issue in by_repo[repo_full])
-        lines.append(f"| `{repo_short}` | {numbers} | none |")
+        labels = sorted(
+            {
+                l.get("name", "")
+                for issue in by_repo[repo_full]
+                for l in (issue.get("labels") or [])
+                if l.get("name")
+            }
+        )
+        labels_cell = ", ".join(f"`{name}`" for name in labels) or "_(none)_"
+        lines.append(f"| `{repo_short}` | {numbers} | {labels_cell} |")
     lines.append("")
     return "\n".join(lines)
 
