@@ -3,7 +3,9 @@
 A standalone companion to `pr_digest.py`. Reads `repos.yaml`,
 queries the GitHub issues endpoint for each repo, filters to open
 issues with priority labels (P-critical, P-high, P-medium), and
-posts a weekly markdown digest to Mattermost.
+posts a weekly markdown digest to Mattermost. Open issues with no
+priority label at all are also surfaced in an "Untriaged" section so
+un-prioritized work isn't silently invisible.
 
 The script is intentionally independent from `pr_digest.py`:
 - Issues don't have the same review-cycle urgency as PRs, so
@@ -41,6 +43,10 @@ PRIORITY_LABELS = ("P-critical", "P-high", "P-medium")
 # Render order: most urgent first so the recency-critical items
 # jump out at the top of the digest.
 PRIORITY_ORDER = ("P-critical", "P-high", "P-medium")
+# Every priority label, including P-low. Used to decide whether an
+# issue has been triaged at all — an issue carrying any of these has
+# been prioritized, even if it sits below the digest's P-medium floor.
+ALL_PRIORITY_LABELS = PRIORITY_LABELS + ("P-low",)
 
 # Truthy values accepted for boolean env vars (DRY_RUN).
 _TRUTHY = frozenset({"1", "true", "True", "yes", "Yes", "on", "On"})
@@ -122,17 +128,26 @@ def has_priority_label(issue: dict[str, Any]) -> bool:
     return False
 
 
+def has_any_priority_label(issue: dict[str, Any]) -> bool:
+    """Return True if `issue` carries any P-* label, including P-low."""
+    for label in issue.get("labels", []) or []:
+        if label.get("name", "") in ALL_PRIORITY_LABELS:
+            return True
+    return False
+
+
 def collect_priority_issues(
     repo_full: str, token: str
-) -> tuple[str, list[dict[str, Any]]] | None:
-    """Fetch open priority (P-medium/high/critical) issues for a repo.
+) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]] | None:
+    """Fetch open issues for a repo, split into prioritized and untriaged.
 
-    Returns (repo_full, issues) or None on total failure. PRs that
-    leak through the issues endpoint are dropped first; then
-    issues with no qualifying priority label are dropped. The
-    caller renders the result directly — no extra enrichment
-    (assignees, milestone, body excerpt) is fetched because the
-    list endpoint already includes them.
+    Returns (repo_full, prioritized, untriaged) or None on total failure.
+    PRs that leak through the issues endpoint are dropped first. Issues
+    with a P-critical/high/medium label go in `prioritized`; issues with
+    no P-* label at all (not even P-low) go in `untriaged`. P-low-only
+    issues are intentionally excluded from both. The caller renders the
+    result directly — no extra enrichment (assignees, milestone, body
+    excerpt) is fetched because the list endpoint already includes them.
     """
     if "/" not in repo_full:
         print(f"  ! skipping malformed entry: {repo_full!r}", file=sys.stderr)
@@ -153,8 +168,9 @@ def collect_priority_issues(
         )
         return None
 
-    matched = [issue for issue in raw_issues if has_priority_label(issue)]
-    return (repo_full, matched)
+    prioritized = [issue for issue in raw_issues if has_priority_label(issue)]
+    untriaged = [issue for issue in raw_issues if not has_any_priority_label(issue)]
+    return (repo_full, prioritized, untriaged)
 
 
 def _esc(s: str) -> str:
@@ -289,8 +305,36 @@ def build_issue_section(
     return "\n".join(lines)
 
 
+def build_untriaged_section(untriaged: list[tuple[str, dict[str, Any]]]) -> str:
+    """Render untriaged issues as a per-repo summary table.
+
+    Unlike the priority buckets (a single flat table), untriaged
+    issues are rolled up into one row per repo so the reader can
+    see at a glance which repos carry un-prioritized backlog. The
+    "Priority labels applied" column is always "none" here because
+    untriaged issues carry no P-* label by definition. Returns an
+    empty string when there are no untriaged issues, so the caller
+    can skip the section entirely.
+    """
+    if not untriaged:
+        return ""
+    by_repo: dict[str, list[dict[str, Any]]] = {}
+    for repo_full, issue in untriaged:
+        by_repo.setdefault(repo_full, []).append(issue)
+
+    lines = [f"## Untriaged (no priority label) ({len(untriaged)})", ""]
+    lines.append("| Repo | Open issues | Priority labels applied |")
+    lines.append("|---|---|---|")
+    for repo_full in sorted(by_repo):
+        repo_short = repo_full.split("/", 1)[-1]
+        numbers = ", ".join(f"#{issue['number']}" for issue in by_repo[repo_full])
+        lines.append(f"| `{repo_short}` | {numbers} | none |")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def build_issue_digest(
-    repos_with_issues: list[tuple[str, list[dict[str, Any]]]],
+    repos_with_issues: list[tuple[str, list[dict[str, Any]], list[dict[str, Any]]]],
     now: datetime,
 ) -> str:
     """Build the full markdown digest string, grouped by priority bucket.
@@ -298,19 +342,25 @@ def build_issue_digest(
     All issues across repos are bucketed by their priority label
     (P-critical → P-high → P-medium). Within each bucket, issues
     are sorted oldest-first so the most overdue work surfaces at
-    the top. The Org summary lists total counts per priority
-    level so the reader can see the landscape at a glance.
+    the top. Open issues with no priority label at all are listed
+    in an "Untriaged" section so un-prioritized work isn't silently
+    invisible. The Org summary lists total counts per priority
+    level plus the untriaged count so the reader can see the whole
+    landscape at a glance.
     """
     flat: list[tuple[str, dict[str, Any]]] = []
-    for repo_full, issues in repos_with_issues:
+    untriaged: list[tuple[str, dict[str, Any]]] = []
+    for repo_full, issues, untriaged_issues in repos_with_issues:
         for issue in issues:
             flat.append((repo_full, issue))
+        for issue in untriaged_issues:
+            untriaged.append((repo_full, issue))
 
     today = now.strftime("%Y-%m-%d")
     lines: list[str] = [f"# Issue Digest — charmed-hpc — {today}", ""]
 
-    if not flat:
-        lines.append("_No open priority issues across tracked repos. :tada:_")
+    if not flat and not untriaged:
+        lines.append("_No open issues across tracked repos. :tada:_")
         lines.append("")
         return "\n".join(lines)
 
@@ -339,6 +389,7 @@ def build_issue_digest(
     for label in PRIORITY_ORDER:
         n = len(by_priority[label])
         lines.append(f"- {label}: {n}")
+    lines.append(f"- Untriaged (no priority label): {len(untriaged)}")
     lines.append("")
 
     for label in PRIORITY_ORDER:
@@ -346,6 +397,11 @@ def build_issue_digest(
         if section:
             lines.append(section.rstrip())
             lines.append("")
+
+    untriaged_section = build_untriaged_section(untriaged)
+    if untriaged_section:
+        lines.append(untriaged_section.rstrip())
+        lines.append("")
 
     return "\n".join(lines)
 
@@ -403,11 +459,11 @@ def main() -> int:
 
     now = datetime.now(timezone.utc)
     print(f"Fetching open priority issues from {len(repos)} repos…", file=sys.stderr)
-    results: list[tuple[str, list[dict[str, Any]]]] = []
+    results: list[tuple[str, list[dict[str, Any]], list[dict[str, Any]]]] = []
     for r in repos:
         print(f"  - {r}", file=sys.stderr)
         result = collect_priority_issues(r, token)
-        if result is not None and result[1]:
+        if result is not None and (result[1] or result[2]):
             results.append(result)
 
     digest = build_issue_digest(results, now)
