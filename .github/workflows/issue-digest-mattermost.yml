@@ -38,6 +38,6 @@ jobs:
           # webhook. Set DRY_RUN=1 to log instead of post.
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           MATTERMOST_WEBHOOK_URL: ${{ secrets.MATTERMOST_WEBHOOK_URL }}
-          DRY_RUN: 1
+          DRY_RUN: 0
           REPOS_FILE: ${{ github.workspace }}/repos.yaml
         run: python scripts/issue_digest.py
