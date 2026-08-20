@@ -412,6 +412,7 @@ def build_digest(
     repos: list[str] | None = None,
     exclude_bots: bool = False,
     include_only_bots: bool = False,
+    title: str = "PR Digest",
 ) -> str:
     """Build the full markdown digest string, bucketed by activity tier.
 
@@ -447,6 +448,10 @@ def build_digest(
     merged-PR fetch so that bot filtering applies consistently to
     both open and merged PRs. When neither is set (the default), all
     PRs are included.
+
+    `title` is the heading prefix for the digest (e.g. "PR Digest"
+    for the regular PR digests, "Bot Reviews" for the bi-weekly
+    bots digest). Defaults to "PR Digest" for backward compatibility.
     """
     all_prs: list[dict[str, Any]] = []
     for _repo, prs in repos_with_prs:
@@ -505,7 +510,7 @@ def build_digest(
         span = f"{span_start} → {today}"
     else:
         span = today
-    lines: list[str] = [f"# Bot Reviews — charmed-hpc — {span}", ""]
+    lines: list[str] = [f"# {title} — charmed-hpc — {span}", ""]
 
     # Short-circuit only when there's nothing to show at all — no open
     # PRs AND no merged recap. Otherwise fall through so the Org
@@ -1229,6 +1234,11 @@ def main() -> int:
         )
         return 2
 
+    # Distinct headers per digest variant. The bi-weekly bots digest
+    # (INCLUDE_ONLY_BOTS) names itself "Bot Reviews" so it isn't
+    # confused with the regular PR digests.
+    title = "Bot Reviews" if include_only_bots else "PR Digest"
+
     repos_path = Path(
         os.environ.get("REPOS_FILE", Path(__file__).parent.parent / "repos.yaml")
     )
@@ -1276,6 +1286,7 @@ def main() -> int:
         repos=repos,
         exclude_bots=exclude_bots,
         include_only_bots=include_only_bots,
+        title=title,
     )
 
     if _truthy("DRY_RUN"):
