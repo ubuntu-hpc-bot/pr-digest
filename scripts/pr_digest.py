@@ -494,11 +494,14 @@ def build_digest(
 
     # The header names the span of time this review covers: from the
     # oldest PR (open or merged) in scope through today.
-    created_dates = [pr["created_at"] for pr in all_prs]
+    # created_at is already a datetime for open PRs (from collect_pr_activity)
+    # but a raw ISO string for merged PRs (from list_merged_prs_since).
+    # Normalize to datetimes so min() compares consistently.
+    created_dates: list[datetime] = [pr["created_at"] for pr in all_prs]
     for _repo, prs in merged_results:
-        created_dates.extend(pr["created_at"] for pr in prs)
+        created_dates.extend(parse_iso(pr["created_at"]) for pr in prs)
     if created_dates:
-        span_start = parse_iso(min(created_dates)).strftime("%Y-%m-%d")
+        span_start = min(created_dates).strftime("%Y-%m-%d")
         span = f"{span_start} → {today}"
     else:
         span = today
