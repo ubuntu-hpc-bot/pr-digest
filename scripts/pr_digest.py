@@ -187,8 +187,21 @@ def collect_pr_activity(pr: dict[str, Any], token: str) -> dict[str, Any]:
     comments = get_pr_comments(owner, repo, number, token)
     reviews = get_pr_reviews(owner, repo, number, token)
 
-    requested_reviewers = [r["login"] for r in detail.get("requested_reviewers", [])]
+    pending_reviewers = [r["login"] for r in detail.get("requested_reviewers", [])]
     requested_teams = [t["slug"] for t in detail.get("requested_teams", [])]
+    # Union with reviewers who already submitted a review, so the
+    # Reviewers column and reviewer-load summary reflect everyone who
+    # has weighed in or is still pending. Order: pending first, then
+    # past reviewers in the order their reviews appear, deduplicated.
+    submitted_logins = [
+        r["user"]["login"] for r in reviews if r.get("user", {}).get("login")
+    ]
+    seen: set[str] = set()
+    requested_reviewers: list[str] = []
+    for login in pending_reviewers + submitted_logins:
+        if login not in seen:
+            seen.add(login)
+            requested_reviewers.append(login)
 
     candidates: list[datetime] = [parse_iso(pr["updated_at"])]
     for c in comments:
