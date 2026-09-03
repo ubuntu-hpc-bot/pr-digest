@@ -306,7 +306,18 @@ def bucket_pr(
       little engagement (≤ new_max_comments comments). New but quiet.
     - stale: PR has had no business-hour activity for ≥ stale_min_hours.
     - active: everything else.
+
+    Approved PRs never land in 'needs_attention': an approval *is*
+    engagement, and listing one under "needs attention" misrepresents
+    the state of things. They flow through to 'active' (or 'stale' if
+    they go quiet past the staleness threshold).
     """
+    if pr.get("review_state") == "Approved":
+        hours_since_activity = business_hours_between(pr["last_activity"], now)
+        if hours_since_activity >= thresholds["stale_min_hours"]:
+            return "stale"
+        return "active"
+
     hours_since_activity = business_hours_between(pr["last_activity"], now)
     age_hours = business_hours_between(pr["created_at"], now)
 
