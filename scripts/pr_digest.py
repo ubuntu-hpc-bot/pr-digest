@@ -306,18 +306,7 @@ def bucket_pr(
       little engagement (≤ new_max_comments comments). New but quiet.
     - stale: PR has had no business-hour activity for ≥ stale_min_hours.
     - active: everything else.
-
-    Approved PRs never land in 'needs_attention': an approval *is*
-    engagement, and listing one under "needs attention" misrepresents
-    the state of things. They flow through to 'active' (or 'stale' if
-    they go quiet past the staleness threshold).
     """
-    if pr.get("review_state") == "Approved":
-        hours_since_activity = business_hours_between(pr["last_activity"], now)
-        if hours_since_activity >= thresholds["stale_min_hours"]:
-            return "stale"
-        return "active"
-
     hours_since_activity = business_hours_between(pr["last_activity"], now)
     age_hours = business_hours_between(pr["created_at"], now)
 
@@ -538,16 +527,26 @@ def build_digest(
 
     lines: list[str] = [f"# {title} — charmed-hpc — {date_label}", ""]
 
-    # Short-circuit only when there's nothing to show at all — no open
-    # PRs AND no merged recap. Otherwise fall through so the Org
-    # summary still gets rendered (e.g. "0 open, N merged this week").
-    if not all_prs and not merged_section:
+    # Partition approved PRs out of the digest before the early-return
+    # check below. They're counted in the org summary (so the team still
+    # sees the merge backlog) but excluded from bucketing, reviewer load,
+    # and all rendered sections — an approved PR is effectively done and
+    # shouldn't compete for attention with PRs that still need review.
+    approved = [pr for pr in all_prs if pr["review_state"] == "Approved"]
+    all_prs = [pr for pr in all_prs if pr["review_state"] != "Approved"]
+
+    # Short-circuit only when there's truly nothing to show — no open
+    # PRs (including approved ones) AND no merged recap. Otherwise fall
+    # through so the Org summary still gets rendered (e.g. "0 open, N
+    # merged this week", or "N open (all approved, awaiting merge)").
+    if not all_prs and not approved and not merged_section:
         lines.append("_No open PRs across tracked repos. :tada:_")
         lines.append("")
         return "\n".join(lines)
 
     repo_count = len(repos_with_prs)
-    total_prs = len(all_prs)
+    total_prs = len(all_prs) + len(approved)
+
     reviewer_load = build_reviewer_load(
         [("", pr) for pr in all_prs]  # repo not used by build_reviewer_load
     )
@@ -584,10 +583,15 @@ def build_digest(
     lines.append("## Org summary")
     if include_merged:
         lines.append(f"- {merged_count} merged this week")
-    lines.append(
+    open_summary = (
         f"- {total_prs} open PR{'s' if total_prs != 1 else ''} across {repo_count} "
         f"repo{'s' if repo_count != 1 else ''}"
     )
+    if approved:
+        open_summary += (
+            f" ({len(approved)} approved, awaiting merge)"
+        )
+    lines.append(open_summary)
     if include_needs_attention:
         lines.append(
             f"- {len(needs_attention)} new but quiet (≤ "
