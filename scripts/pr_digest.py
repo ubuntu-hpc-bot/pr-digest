@@ -27,13 +27,26 @@ from typing import Any
 
 import yaml
 
-from business_hours import business_hours_between
+from business_hours import add_business_days, business_hours_between
 
 
 GITHUB_API = "https://api.github.com"
 STALE_THRESHOLD_HOURS = 24.0
 HTTP_TIMEOUT = 30
 BODY_EXCERPT_CHARS = 200  # merged-PR body excerpt length
+
+# Priority labels drive the response-timer feature. A PR's timer starts
+# at its last "attended" event (non-author comment, review, or creation)
+# and expires after the label's SLO in business days. Unlabeled PRs are
+# flagged as needing triage instead.
+PRIORITY_LABELS = ("P-critical", "P-high", "P-medium", "P-low")
+PRIORITY_RANK = {name: i for i, name in enumerate(PRIORITY_LABELS)}
+DEFAULT_PRIORITY_SLO_BUSINESS_DAYS: dict[str, int] = {
+    "P-critical": 2,
+    "P-high": 5,     # one week
+    "P-medium": 10,  # two weeks
+    "P-low": 21,     # about a month
+}
 
 # Truthy values accepted for boolean env vars (DRY_RUN, INCLUDE_*).
 # Both the unquoted YAML form (1) and the quoted form ('1') end up as
@@ -119,6 +132,24 @@ def load_repos(path: Path) -> tuple[list[str], dict[str, Any]]:
         "new_max_comments": int(raw_thresholds.get("new_max_comments", 1)),
         "stale_min_hours": float(raw_thresholds.get("stale_min_hours", 120)),
     }
+
+    # Per-priority response SLOs in business days. Start from the code
+    # defaults, then let repos.yaml override any/all of them.
+    slos = dict(DEFAULT_PRIORITY_SLO_BUSINESS_DAYS)
+    raw_slos = raw_thresholds.get("priority_slo_business_days", {}) or {}
+    if not isinstance(raw_slos, dict):
+        raise ValueError(
+            "repos.yaml: 'priority_slo_business_days' must be a mapping"
+        )
+    for name, days in raw_slos.items():
+        key = str(name).strip()
+        if key not in PRIORITY_RANK:
+            raise ValueError(
+                f"repos.yaml: unknown priority label {key!r} "
+                f"(expected one of {', '.join(PRIORITY_LABELS)})"
+            )
+        slos[key] = int(days)
+    thresholds["priority_slo_business_days"] = slos
     return repo_list, thresholds
 
 
@@ -211,6 +242,25 @@ def collect_pr_activity(pr: dict[str, Any], token: str) -> dict[str, Any]:
             candidates.append(parse_iso(r["submitted_at"]))
     last_activity = max(candidates)
 
+    # Response-timer baseline: the last time someone other than the
+    # author "attended" to the PR. Any review counts; comments only
+    # count from non-authors (so the author re-pinging their own PR
+    # doesn't mask a missing team response). Creation starts the clock.
+    author_login = pr["user"]["login"]
+    attended: list[datetime] = [parse_iso(pr["created_at"])]
+    for c in comments:
+        if c.get("user", {}).get("login") != author_login:
+            attended.append(parse_iso(c["created_at"]))
+    for r in reviews:
+        if r.get("submitted_at"):
+            attended.append(parse_iso(r["submitted_at"]))
+    last_attended = max(attended)
+
+    labels = [
+        l.get("name", "") for l in detail.get("labels", []) if l.get("name")
+    ]
+    priority = priority_of(labels)
+
     # Issue comments + review bodies count as "comments" for activity.
     review_bodies = [r for r in reviews if r.get("body")]
     comment_count = len(comments) + len(review_bodies)
@@ -219,7 +269,6 @@ def collect_pr_activity(pr: dict[str, Any], token: str) -> dict[str, Any]:
     # activity/bucketing logic (see external_comment_count below) only
     # counts non-author comments, so a PR where the author is the only
     # commenter still gets flagged as needing attention.
-    author_login = pr["user"]["login"]
     commenter_counts: dict[str, int] = {}
     for c in comments:
         u = c.get("user", {}).get("login")
@@ -248,6 +297,10 @@ def collect_pr_activity(pr: dict[str, Any], token: str) -> dict[str, Any]:
         "created_at": parse_iso(pr["created_at"]),
         "updated_at": parse_iso(pr["updated_at"]),
         "last_activity": last_activity,
+        "last_attended": last_attended,
+        "labels": labels,
+        "priority": priority,
+        "is_bot_author": _is_bot(author_login),
         "requested_reviewers": requested_reviewers,
         "requested_teams": requested_teams,
         "draft": bool(pr.get("draft", False)),
@@ -343,7 +396,83 @@ def last_activity_human(last: datetime, now: datetime) -> str:
     return f"{minutes}m ago"
 
 
-def build_pr_row(pr: dict[str, Any], now: datetime) -> str:
+def priority_of(labels: list[str]) -> str | None:
+    """Return the canonical priority label on a PR, or None.
+
+    Matching is case-insensitive so `p-High` and `P-high` both count;
+    the canonical spelling from PRIORITY_LABELS is what gets stored.
+    If multiple priority labels are present, the highest severity wins.
+    """
+    by_lower = {name.lower(): name for name in PRIORITY_LABELS}
+    matches = [
+        by_lower[label.strip().lower()]
+        for label in labels
+        if label.strip().lower() in by_lower
+    ]
+    if not matches:
+        return None
+    return min(matches, key=lambda name: PRIORITY_RANK[name])
+
+
+def timer_human(hours: float) -> str:
+    """Render a business-hour count as a short human string."""
+    total_minutes = int(hours * 60)
+    days, rem = divmod(total_minutes, 24 * 60)
+    h, m = divmod(rem, 60)
+    if days > 0:
+        return f"{days}d{h:02d}h"
+    if h > 0:
+        return f"{h}h{m:02d}m"
+    return f"{m}m"
+
+
+def compute_timer(
+    pr: dict[str, Any], now: datetime, slos: dict[str, int]
+) -> dict[str, Any] | None:
+    """Compute a PR's response timer, or None when it has no timer.
+
+    Draft PRs and bot-authored PRs are excluded entirely; human PRs
+    without a priority label are handled by the caller as 'needs
+    triage' rather than getting a timer here. Since business_hours_
+    between clamps negative ranges to 0, exactly one of remaining/
+    overdue is positive.
+    """
+    if pr["draft"] or pr["is_bot_author"] or pr["priority"] is None:
+        return None
+    slo_days = slos.get(
+        pr["priority"], DEFAULT_PRIORITY_SLO_BUSINESS_DAYS[pr["priority"]]
+    )
+    deadline = add_business_days(pr["last_attended"], slo_days)
+    return {
+        "priority": pr["priority"],
+        "remaining_hours": business_hours_between(now, deadline),
+        "overdue_hours": business_hours_between(deadline, now),
+    }
+
+
+def build_timer_cell(
+    pr: dict[str, Any], now: datetime, slos: dict[str, int]
+) -> str:
+    """Render the Timer table cell for a PR.
+
+    - labeled PRs: time left (or overdue) against the priority SLO,
+      with overdue entries bolded and flagged so they stand out
+    - unlabeled human PRs: 'needs triage'
+    - drafts and bot-authored PRs: no timer (em dash)
+    """
+    timer = compute_timer(pr, now, slos)
+    if timer is None:
+        if pr["priority"] is None and not pr["draft"] and not pr["is_bot_author"]:
+            return "_needs triage_"
+        return "—"
+    if timer["overdue_hours"] > 0:
+        return f"**⏰ {timer_human(timer['overdue_hours'])} over**"
+    return f"{timer_human(timer['remaining_hours'])} left"
+
+
+def build_pr_row(
+    pr: dict[str, Any], now: datetime, slos: dict[str, int] | None = None
+) -> str:
     """Render a single PR as a markdown table row."""
     number = pr["number"]
     url = pr["html_url"]
@@ -351,6 +480,8 @@ def build_pr_row(pr: dict[str, Any], now: datetime) -> str:
     repo_short = pr["repo_full"].split("/", 1)[-1]
     age = age_human(pr["created_at"], now)
     last = last_activity_human(pr["last_activity"], now)
+    if slos is None:
+        slos = DEFAULT_PRIORITY_SLO_BUSINESS_DAYS
 
     reviewer_list = list(pr["requested_reviewers"])
     if pr["requested_teams"]:
@@ -381,12 +512,16 @@ def build_pr_row(pr: dict[str, Any], now: datetime) -> str:
         title = title[:50] + "…"
     return (
         f"| [{repo_short}#{number}]({url}) {title} "
-        f"| {author} | {age} | {last} | {comments_cell} | {reviewers} | {pr['review_state']} |"
+        f"| {author} | {age} | {last} | {comments_cell} | {reviewers} | {pr['review_state']} "
+        f"| {build_timer_cell(pr, now, slos)} |"
     )
 
 
 def build_pr_section(
-    title: str, prs: list[dict[str, Any]], now: datetime
+    title: str,
+    prs: list[dict[str, Any]],
+    now: datetime,
+    slos: dict[str, int] | None = None,
 ) -> str:
     """Render a markdown section (heading + table) for a list of PRs.
 
@@ -395,11 +530,15 @@ def build_pr_section(
     """
     if not prs:
         return ""
+    if slos is None:
+        slos = DEFAULT_PRIORITY_SLO_BUSINESS_DAYS
     lines = [f"## {title} ({len(prs)})", ""]
-    lines.append("| PR | Author | Age | Last activity | Comments | Reviewers | Status |")
-    lines.append("|---|---|---|---|---|---|---|")
+    lines.append(
+        "| PR | Author | Age | Last activity | Comments | Reviewers | Status | Timer |"
+    )
+    lines.append("|---|---|---|---|---|---|---|---|")
     for pr in prs:
-        lines.append(build_pr_row(pr, now))
+        lines.append(build_pr_row(pr, now, slos))
     lines.append("")
     return "\n".join(lines)
 
@@ -465,6 +604,16 @@ def build_digest(
     `title` is the heading prefix for the digest (e.g. "PR Digest"
     for the regular PR digests, "Bot Reviews" for the bi-weekly
     bots digest). Defaults to "PR Digest" for backward compatibility.
+
+    Response timers: every human, non-draft PR gets a Timer column
+    computed from its priority label's SLO in business days
+    (configurable via `thresholds['priority_slo_business_days']`,
+    loaded from repos.yaml). The timer starts at the PR's last
+    "attended" event (non-author comment, any review, or creation)
+    and resets on each new one. PRs past their deadline render in a
+    top "Overdue" section; human PRs without a priority label render
+    in a "Needs triage" section. Drafts and bot-authored PRs get no
+    timer.
     """
     all_prs: list[dict[str, Any]] = []
     for _repo, prs in repos_with_prs:
@@ -580,6 +729,45 @@ def build_digest(
         bucket[:] = [pr for pr in bucket if not pr["draft"]]
     drafts.sort(key=lambda p: p["last_activity"], reverse=True)
 
+    # Response timers: partition overdue PRs and unlabeled (needs-
+    # triage) PRs out of the activity buckets so each PR renders once.
+    # Overdue PRs move to their own top section (they're the most
+    # urgent thing in the digest); unlabeled human PRs move to a
+    # Needs triage section so someone adds a priority label. Drafts
+    # and bot-authored PRs are excluded from both (compute_timer
+    # returns None for them) — drafts aren't ready for review and
+    # bot PRs shouldn't be asked to triage themselves.
+    slos = thresholds["priority_slo_business_days"]
+    overdue_with_timers: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    needs_triage: list[dict[str, Any]] = []
+
+    def _partition_timers(bucket: list[dict[str, Any]]) -> None:
+        keep: list[dict[str, Any]] = []
+        for pr in bucket:
+            timer = compute_timer(pr, now, slos)
+            if timer is not None and timer["overdue_hours"] > 0:
+                overdue_with_timers.append((timer, pr))
+            elif pr["priority"] is None and not pr["is_bot_author"]:
+                needs_triage.append(pr)
+            else:
+                keep.append(pr)
+        bucket[:] = keep
+
+    for bucket in (needs_attention, active, stale):
+        _partition_timers(bucket)
+
+    # Worst first: higher severity before lower, then most-overdue.
+    overdue_with_timers.sort(
+        key=lambda tp: (
+            PRIORITY_RANK[tp[0]["priority"]],
+            -tp[0]["overdue_hours"],
+        )
+    )
+    overdue = [pr for _, pr in overdue_with_timers]
+    # Longest-ignored first: unlabeled PRs have been sitting without
+    # anyone even classifying them.
+    needs_triage.sort(key=lambda p: p["last_activity"])
+
     lines.append("## Org summary")
     if include_merged:
         lines.append(f"- {merged_count} merged this week")
@@ -606,6 +794,31 @@ def build_digest(
     lines.append(f"- {len(active)} active")
     if drafts:
         lines.append(f"- {len(drafts)} draft{'' if len(drafts) == 1 else 's'}")
+    if overdue:
+        sev_counts: dict[str, int] = {}
+        for timer, _ in overdue_with_timers:
+            sev_counts[timer["priority"]] = (
+                sev_counts.get(timer["priority"], 0) + 1
+            )
+        breakdown = ", ".join(
+            f"{name} {n}"
+            for name, n in sorted(
+                sev_counts.items(), key=lambda kv: PRIORITY_RANK[kv[0]]
+            )
+        )
+        lines.append(f"- **{len(overdue)} overdue**: {breakdown}")
+    if needs_triage:
+        lines.append(
+            f"- {len(needs_triage)} need priority triage "
+            f"(no P-* label)"
+        )
+    slo_str = ", ".join(
+        f"{name} {slos[name]}bd" for name in PRIORITY_LABELS
+    )
+    lines.append(
+        f"- Response timers (business days; reset by non-author "
+        f"comments and reviews): {slo_str}"
+    )
     if reviewer_load:
         load_str = ", ".join(f"{u} ({n})" for u, n in reviewer_load[:5])
         lines.append(f"- Reviewer load (top): {load_str}")
@@ -620,6 +833,8 @@ def build_digest(
         lines.append("")
 
     rendered_buckets: list[tuple[str, list[dict[str, Any]]]] = []
+    rendered_buckets.append(("Overdue", overdue))
+    rendered_buckets.append(("Needs triage", needs_triage))
     if include_needs_attention:
         rendered_buckets.append(("Needs attention", needs_attention))
     rendered_buckets.append(("Active", active))

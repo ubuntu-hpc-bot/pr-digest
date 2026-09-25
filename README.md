@@ -1,4 +1,4 @@
-PR Digest summarizes pull requests for the `charmed-hpc` org and posts them to one of two configurable **targets**: Mattermost or Matrix. Each target has its own workflow, its own schedule (cron, in UTC), and its own secrets. Digests are bucketed by activity (Merged this week, Needs attention, Active, Stale / dead) and include comment and reviewer activity.
+PR Digest summarizes pull requests for the `charmed-hpc` org and posts them to one of two configurable **targets**: Mattermost or Matrix. Each target has its own workflow, its own schedule (cron, in UTC), and its own secrets. Digests are bucketed by activity (Overdue, Needs triage, Needs attention, Active, Stale / dead) and include comment and reviewer activity.
 
 *Made with AI agents (Minimax primarily).*
 
@@ -60,6 +60,29 @@ digest:
 
 When neither is set (the default), all PRs appear — both human and
 bot. Setting both is an error; the script exits with code 2.
+
+### Response timers
+
+Every human, non-draft PR gets a **Timer** column driven by its
+priority label (`P-critical`, `P-high`, `P-medium`, `P-low`). The
+timer starts at the PR's last *attended* event — a comment from
+someone other than the author, any review submission, or creation —
+and expires after the label's SLO in business days. Each new attended
+event resets the clock:
+
+| Label | SLO (business days) |
+|---|---|
+| `P-critical` | 2 |
+| `P-high` | 5 (one week) |
+| `P-medium` | 10 (two weeks) |
+| `P-low` | 21 (about a month) |
+
+PRs past their deadline are pulled out of the regular buckets into a
+top **Overdue** section, sorted by severity then most-overdue, and
+flagged in place with `⏰ Nd over`. Human PRs with no priority label
+land in a **Needs triage** section instead of getting a timer. Drafts
+and bot-authored PRs are excluded. The SLOs are configurable per
+label in `repos.yaml` under `thresholds.priority_slo_business_days`.
 
 ### Independence
 The two targets are independent. Enable either, both, or neither —

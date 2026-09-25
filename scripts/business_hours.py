@@ -12,6 +12,22 @@ approximately three business days. This avoids flagging
 from datetime import datetime, timedelta
 
 
+def add_business_days(start: datetime, days: int) -> datetime:
+    """Return `start` advanced by `days` business days (Mon-Fri).
+
+    Time of day is preserved; weekend days are skipped. One business
+    day after Friday 15:00 is Monday 15:00. Weekends contribute zero
+    elapsed business days, matching business_hours_between.
+    """
+    cursor = start
+    remaining = days
+    while remaining > 0:
+        cursor += timedelta(days=1)
+        if cursor.weekday() < 5:
+            remaining -= 1
+    return cursor
+
+
 def business_hours_between(start: datetime, end: datetime) -> float:
     """Return the number of business hours (Mon-Fri) between two datetimes.
 

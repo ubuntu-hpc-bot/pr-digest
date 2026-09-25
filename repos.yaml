@@ -13,6 +13,16 @@ thresholds:
     new_max_comments: 1
     # PRs with no activity for longer than this go in "Stale / dead".
     stale_min_hours: 240
+    # Response-time SLOs per priority label, in business days.
+    # A PR's timer starts at its last attended event (non-author
+    # comment, review, or creation) and resets on each new one.
+    # Overdue PRs are listed in the digest's "Overdue" section;
+    # PRs with no P-* label are listed under "Needs triage".
+    priority_slo_business_days:
+        P-critical: 2
+        P-high: 5      # one week
+        P-medium: 10   # two weeks
+        P-low: 21      # about a month
 
 repos:
     - canonical/apptainer-operator
